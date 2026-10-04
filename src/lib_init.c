@@ -14,6 +14,9 @@
 #include "lualib.h"
 
 #include "lj_arch.h"
+#if LJ_NL
+#include "nl.h"
+#endif
 
 static const luaL_Reg lj_lib_load[] = {
   { "",			luaopen_base },
@@ -26,6 +29,9 @@ static const luaL_Reg lj_lib_load[] = {
   { LUA_DBLIBNAME,	luaopen_debug },
   { LUA_BITLIBNAME,	luaopen_bit },
   { LUA_JITLIBNAME,	luaopen_jit },
+#if LJ_NL
+  { "nl",		luaopen_nl },  /* Needs the libraries above. */
+#endif
   { NULL,		NULL }
 };
 

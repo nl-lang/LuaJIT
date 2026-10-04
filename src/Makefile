@@ -115,6 +115,25 @@ XCFLAGS=
 ##############################################################################
 
 ##############################################################################
+###################################  NL  #####################################
+##############################################################################
+# NL extensions (nl.h). Add -DLUAJIT_DISABLE_NL to XCFLAGS for a stock build.
+#
+# The runtime library is embedded as bytecode: the files NL_RUNTIME_DIR/*.lua,
+# concatenated in name order, compiled by a bootstrap luajit built first from
+# the same sources (or by NL_HOST_LUAJIT when cross-compiling).
+NL_RUNTIME_DIR= ../../runtime
+#NL_HOST_LUAJIT= /path/to/host/luajit
+#
+# The compiler library: a static libnlc (crates/nl_capi of the NL repository)
+# and the system libraries it needs. It is linked into the luajit executable
+# and the shared library. Without it they get a stub whose every compile
+# fails. libluajit.a never contains a compiler: hosts link libnlc themselves.
+NL_LIBNLC=
+NL_LIBNLC_LIBS=
+##############################################################################
+
+##############################################################################
 ############################  DEBUGGING SUPPORT  #############################
 ##############################################################################
 # Enable these options as needed, but make sure you force a full recompile
@@ -529,7 +548,10 @@ LJCORE_O= lj_assert.o lj_gc.o lj_err.o lj_char.o lj_bc.o lj_obj.o lj_buf.o \
 	  lj_lib.o lj_alloc.o lib_aux.o \
 	  $(LJLIB_O) lib_init.o
 
-LJVMCORE_O= $(LJVM_O) $(LJCORE_O)
+LJNL_O= lj_nlstate.o lj_nlapi.o lj_nlload.o lib_nl.o lib_event.o
+LJNLRT_O= lj_nlrt.o
+
+LJVMCORE_O= $(LJVM_O) $(LJCORE_O) $(LJNL_O) $(LJNLRT_O)
 LJVMCORE_DYNO= $(LJVMCORE_O:.o=_dyn.o)
 
 LIB_VMDEF= jit/vmdef.lua
@@ -540,10 +562,16 @@ LUAJIT_A= libluajit.a
 LUAJIT_SO= libluajit.so
 LUAJIT_T= luajit
 
-ALL_T= $(LUAJIT_T) $(LUAJIT_A) $(LUAJIT_SO) $(HOST_T)
+NLBOOT_T= luajit_nlboot
+NLBOOT_O= $(LJVM_O) $(LJCORE_O) $(LJNL_O) lj_nlrt_boot.o lj_nlnocomp.o \
+	  $(LUAJIT_O)
+NL_RUNTIME_SRC= $(sort $(wildcard $(NL_RUNTIME_DIR)/*.lua))
+
+ALL_T= $(LUAJIT_T) $(LUAJIT_A) $(LUAJIT_SO) $(HOST_T) $(NLBOOT_T)
 ALL_HDRGEN= lj_bcdef.h lj_ffdef.h lj_libdef.h lj_recdef.h lj_folddef.h \
 	    host/buildvm_arch.h luajit.h
-ALL_GEN= $(LJVM_S) $(ALL_HDRGEN) luajit_relver.txt $(LIB_VMDEFP)
+ALL_GEN= $(LJVM_S) $(ALL_HDRGEN) luajit_relver.txt $(LIB_VMDEFP) \
+	 lj_nlrt.h lj_nlev.h nlrt.lua nlrt.lua.tmp
 WIN_RM= *.obj *.lib *.exp *.dll *.exe *.manifest *.pdb *.ilk
 ALL_RM= $(ALL_T) $(ALL_GEN) *.o host/*.o $(WIN_RM)
 
@@ -622,6 +650,70 @@ endif
 endif
 endif
 
+NL_ENABLED:= $(findstring LJ_NL 1,$(TARGET_TESTARCH))
+# Under "make -n" (or --just-print) the Makefile does nothing while it is
+# read, below.
+NL_DRYRUN:= $(findstring n,$(firstword -$(MAKEFLAGS)))
+
+# NL: the compiler linked into the executable and the shared library. A
+# build without NL (LUAJIT_DISABLE_NL) links none, so that it exports no
+# nl_* or nlc_* symbol.
+ifeq (,$(NL_ENABLED))
+  NL_COMPILER_O=
+  NL_COMPILER_DYNO=
+  NL_COMPILER_DEP=
+else ifeq (,$(NL_LIBNLC))
+  NL_COMPILER_O= lj_nlnocomp.o
+  NL_COMPILER_DYNO= $(if $(filter %_dyn.o,$(LJVMCORE_DYNO)),lj_nlnocomp_dyn.o,lj_nlnocomp.o)
+  NL_COMPILER_DEP= lj_nlnocomp.o
+else
+  NL_COMPILER_O= $(NL_LIBNLC) $(NL_LIBNLC_LIBS)
+  NL_COMPILER_DYNO= $(NL_COMPILER_O)
+  NL_COMPILER_DEP= $(NL_LIBNLC)
+endif
+ifeq (dynamic,$(BUILDMODE))
+  NL_COMPILER_T=
+else
+  NL_COMPILER_T= $(NL_COMPILER_O)
+endif
+# The bootstrap interpreter that compiles the runtime chunk.
+ifeq (,$(NL_HOST_LUAJIT))
+  NLBOOT_X= ./$(NLBOOT_T)
+  NLBOOT_DEP= $(NLBOOT_T)
+else
+  NLBOOT_X= $(NL_HOST_LUAJIT)
+  NLBOOT_DEP=
+endif
+ifneq (,$(NL_ENABLED))
+  NLRT_DEP= lj_nlrt.h lj_nlev.h
+  # luajit.h says that the build has NL, so that lua.hpp includes nl.h.
+  NL_LUAJIT_H= printf '\n\#ifndef LUAJIT_NL\n\#define LUAJIT_NL\t1\t/* Built with NL: nl.h. */\n\#endif\n' >>luajit.h
+  ifeq (Linux,$(TARGET_SYS))
+    TARGET_XLIBS+= -lpthread
+  endif
+  # The runtime chunk's source, nlrt.lua, is regenerated while this Makefile
+  # is read, and replaced only when its contents change. So editing, adding
+  # or removing a runtime file rebuilds lj_nlrt.h, and nothing else does.
+  # When it changes, what is built from it is removed as well, so that the
+  # rebuild does not depend on timestamps: GNU make 3.81 compares them to the
+  # second on some systems, and does not re-read the time of a file that a
+  # forced rule replaced.
+  ifeq (,$(filter clean,$(MAKECMDGOALS)))
+    ifeq (,$(NL_RUNTIME_SRC))
+      $(error NL: no runtime files (*.lua) in NL_RUNTIME_DIR=$(NL_RUNTIME_DIR))
+    endif
+    ifeq (,$(NL_DRYRUN))
+      NLRT_GEN:= $(shell awk 1 $(NL_RUNTIME_SRC) >nlrt.lua.tmp && { cmp -s nlrt.lua.tmp nlrt.lua && rm -f nlrt.lua.tmp || { mv -f nlrt.lua.tmp nlrt.lua && rm -f lj_nlrt.h lj_nlrt.o lj_nlrt_dyn.o $(LUAJIT_A) $(LUAJIT_SO) $(LUAJIT_T) && echo changed; }; })
+      ifeq (changed,$(NLRT_GEN))
+        $(info NLRT      nlrt.lua ($(NL_RUNTIME_DIR)))
+      endif
+    endif
+  endif
+else
+  NLRT_DEP=
+  NL_LUAJIT_H= :
+endif
+
 Q= @
 E= @echo
 #Q=
@@ -671,6 +763,7 @@ luajit.h: $(MINILUA_DEP) $(GIT_DEP) luajit_rolling.h
 	$(E) "VERSION   $@"
 	$(Q)$(GIT_RELVER)
 	$(Q)$(HOST_LUA) host/genversion.lua
+	$(Q)$(NL_LUAJIT_H)
 
 host/buildvm_arch.h: $(DASM_DASC) $(MINILUA_DEP) lj_arch.h lua.h luaconf.h
 	$(E) "DYNASM    $@"
@@ -710,6 +803,20 @@ lj_folddef.h: $(BUILDVM_T) lj_opt_fold.c
 	$(E) "BUILDVM   $@"
 	$(Q)$(BUILDVM_X) -m folddef -o $@ lj_opt_fold.c
 
+# NL runtime chunk (nlrt.lua is made while the Makefile is read, above).
+nlrt.lua:
+	@echo "NL: no runtime files in NL_RUNTIME_DIR=$(NL_RUNTIME_DIR)" >&2
+	@exit 1
+
+lj_nlrt.h: nlrt.lua $(NLBOOT_DEP) jit/bcsave.lua
+	$(E) "NLRT      $@"
+	$(Q)LUA_PATH="./?.lua" $(NLBOOT_X) -bgd -F "=[nl runtime]" -n nlrt -t h nlrt.lua $@
+
+# The run loop of the event library.
+lj_nlev.h: lj_nlevent.lua $(NLBOOT_DEP) jit/bcsave.lua
+	$(E) "NLEV      $@"
+	$(Q)LUA_PATH="./?.lua" $(NLBOOT_X) -bgd -F "=[nl event]" -n nlev -t h lj_nlevent.lua $@
+
 ##############################################################################
 # Object file rules.
 ##############################################################################
@@ -732,7 +839,21 @@ $(HOST_O): %.o: %.c
 	$(E) "HOSTCC    $@"
 	$(Q)$(HOST_CC) $(HOST_ACFLAGS) -c -o $@ $<
 
+lj_nlrt_boot.o: lj_nlrt.c lj_nlint.h lj_nl.h lj_obj.h lj_def.h lj_arch.h nl.h nlc.h
+	$(E) "CC        $@"
+	$(Q)$(TARGET_CC) $(TARGET_ACFLAGS) -DLJ_NLRT_BOOT -c -o $@ lj_nlrt.c
+
 include Makefile.dep
+
+# NL objects (not in Makefile.dep, so that "make depend" stays upstream's).
+LJNL_DEP= lj_nlint.h lj_nl.h lj_obj.h lj_def.h lj_arch.h lua.h luaconf.h \
+	  lauxlib.h nl.h nlc.h
+lj_nlstate.o lj_nlapi.o lj_nlload.o lib_nl.o: $(LJNL_DEP) lj_err.h lj_errmsg.h
+lib_event.o: lib_event.c $(LJNL_DEP)
+lj_nlrt.o: lj_nlrt.c $(LJNL_DEP) $(NLRT_DEP)
+lj_nlnocomp.o: lj_nlnocomp.c nlc.h
+lj_state.o lj_load.o: lj_nl.h
+lib_init.o: nl.h
 
 ##############################################################################
 # Target file rules.
@@ -743,15 +864,19 @@ $(LUAJIT_A): $(LJVMCORE_O)
 	$(Q)$(TARGET_AR) $@ $(LJVMCORE_O)
 
 # The dependency on _O, but linking with _DYNO is intentional.
-$(LUAJIT_SO): $(LJVMCORE_O)
+$(LUAJIT_SO): $(LJVMCORE_O) $(NL_COMPILER_DEP)
 	$(E) "DYNLINK   $@"
-	$(Q)$(TARGET_LD) $(TARGET_ASHLDFLAGS) -o $@ $(LJVMCORE_DYNO) $(TARGET_ALIBS)
+	$(Q)$(TARGET_LD) $(TARGET_ASHLDFLAGS) -o $@ $(LJVMCORE_DYNO) $(NL_COMPILER_DYNO) $(TARGET_ALIBS)
 	$(Q)$(TARGET_STRIP) $@
 
-$(LUAJIT_T): $(TARGET_O) $(LUAJIT_O) $(TARGET_DEP)
+$(LUAJIT_T): $(TARGET_O) $(LUAJIT_O) $(TARGET_DEP) $(NL_COMPILER_DEP)
 	$(E) "LINK      $@"
-	$(Q)$(TARGET_LD) $(TARGET_ALDFLAGS) -o $@ $(LUAJIT_O) $(TARGET_O) $(TARGET_ALIBS)
+	$(Q)$(TARGET_LD) $(TARGET_ALDFLAGS) -o $@ $(LUAJIT_O) $(TARGET_O) $(NL_COMPILER_T) $(TARGET_ALIBS)
 	$(Q)$(TARGET_STRIP) $@
 	$(E) "OK        Successfully built LuaJIT"
+
+$(NLBOOT_T): $(NLBOOT_O)
+	$(E) "LINK      $@"
+	$(Q)$(TARGET_LD) $(TARGET_ALDFLAGS) -o $@ $(NLBOOT_O) $(TARGET_ALIBS)
 
 ##############################################################################

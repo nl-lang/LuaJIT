@@ -628,6 +628,13 @@
 #define LJ_HASBUFFER		1
 #endif
 
+/* NL extensions (nl.h). Disable to get a stock build of the same tree. */
+#if defined(LUAJIT_DISABLE_NL)
+#define LJ_NL			0
+#else
+#define LJ_NL			1
+#endif
+
 #if defined(LUAJIT_DISABLE_PROFILE)
 #define LJ_HASPROFILE		0
 #elif LJ_TARGET_POSIX

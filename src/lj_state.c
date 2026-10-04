@@ -22,6 +22,9 @@
 #if LJ_HASFFI
 #include "lj_ctype.h"
 #endif
+#if LJ_NL
+#include "lj_nl.h"
+#endif
 #include "lj_trace.h"
 #include "lj_dispatch.h"
 #include "lj_vm.h"
@@ -214,6 +217,9 @@ static TValue *cpluaopen(lua_State *L, lua_CFunction dummy, void *ud)
 static void close_state(lua_State *L)
 {
   global_State *g = G(L);
+#if LJ_NL
+  lj_nl_freestate(g);  /* Calls what is still posted with L == NULL. */
+#endif
   lj_func_closeuv(L, tvref(L->stack));
   lj_gc_freeall(g);
   lj_assertG(gcref(g->gc.root) == obj2gco(L),
@@ -314,6 +320,12 @@ LUA_API lua_State *lua_newstate(lua_Alloc allocf, void *allocd)
     close_state(L);
     return NULL;
   }
+#if LJ_NL
+  if (lj_nl_newstate(g) != 0) {
+    close_state(L);
+    return NULL;
+  }
+#endif
   L->status = LUA_OK;
   return L;
 }
