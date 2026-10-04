@@ -20,6 +20,9 @@
 #include "lj_frame.h"
 #include "lj_vm.h"
 #include "lj_lex.h"
+#if LJ_NL
+#include "lj_nl.h"
+#endif
 #include "lj_bcdump.h"
 #include "lj_parse.h"
 
@@ -102,6 +105,11 @@ LUALIB_API int luaL_loadfilex(lua_State *L, const char *filename,
   int status;
   const char *chunkname;
   int err = 0;
+#if LJ_NL
+  /* A file is NL or Lua by its extension (DESIGN 1, 12). */
+  if (filename && lj_nl_isnlfile(filename))
+    return lj_nl_loadfilex(L, filename, mode);
+#endif
   if (filename) {
     chunkname = lua_pushfstring(L, "@%s", filename);
     ctx.fp = fopen(filename, "rb");

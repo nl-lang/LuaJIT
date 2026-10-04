@@ -10,3 +10,8 @@
 *.dmp
 *.swp
 .tags
+luajit_nlboot
+nlrt.lua
+nlrt.lua.tmp
+lj_nlrt.h
+lj_nlev.h

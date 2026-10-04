@@ -5,5 +5,8 @@ extern "C" {
 #include "lauxlib.h"
 #include "lualib.h"
 #include "luajit.h"
+#ifdef LUAJIT_NL
+#include "nl.h"
+#endif
 }
 
