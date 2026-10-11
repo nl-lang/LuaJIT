@@ -171,6 +171,7 @@ int lj_nl_newstate(global_State *g)
   ns->opt[NL_OPT_STRIP] = 0;
   ns->opt[NL_OPT_MAXWORKERS] = 64;
   ns->opt[NL_OPT_WORKERMEM] = 0;
+  ns->opt[NL_OPT_GLUA] = 0;
   g->nl = ns;
   if (!path_init(ns)) return -1;  /* lj_nl_freestate cleans up. */
   return 0;
@@ -319,7 +320,7 @@ LUA_API int nl_setoption(lua_State *L, int opt, lua_Integer value)
 {
   NLState *ns = nl_state(L);
   switch (opt) {
-  case NL_OPT_CHECKS: case NL_OPT_STRIP:
+  case NL_OPT_CHECKS: case NL_OPT_STRIP: case NL_OPT_GLUA:
     if (value != 0 && value != 1) return 0;
     break;
   case NL_OPT_MAXWORKERS: case NL_OPT_WORKERMEM:
@@ -338,6 +339,12 @@ LUA_API lua_Integer nl_getoption(lua_State *L, int opt)
   NLState *ns = nl_state(L);
   if (opt < 1 || opt > NL_OPT__MAX) return 0;
   return ns->opt[opt];
+}
+
+/* Read by lj_lex_setup: whether the chunks loaded from now on are GLua. */
+int lj_nl_glua(lua_State *L)
+{
+  return nl_state(L)->opt[NL_OPT_GLUA] != 0;
 }
 
 LUA_API int nl_isworker(lua_State *L)

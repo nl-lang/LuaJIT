@@ -84,6 +84,7 @@ typedef struct LexState {
   uint32_t level;	/* Syntactical nesting level. */
   int endmark;		/* Trust bytecode end marker, even if not at EOF. */
   int fr2;		/* Generate bytecode for LJ_FR2 mode. */
+  int glua;		/* Accept GLua syntax (NL_OPT_GLUA). */
   VarIndex vhash[LJ_VINDEX_HSIZE];	/* Variable hash chain anchors. */
 } LexState;
 
