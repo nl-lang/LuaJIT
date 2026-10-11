@@ -30,7 +30,7 @@ typedef struct NLPost {
   struct NLPost *next;
 } NLPost;
 
-#define NL_OPT__MAX	4
+#define NL_OPT__MAX	5
 
 /* A pending protected call (lj_nl_protect). */
 typedef int (*NLProtF)(lua_State *L, void *ud);

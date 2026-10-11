@@ -26,6 +26,9 @@
 #include "lj_char.h"
 #include "lj_strscan.h"
 #include "lj_strfmt.h"
+#if LJ_NL
+#include "lj_nl.h"
+#endif
 
 /* Lua lexer token names. */
 static const char *const tokennames[] = {
@@ -396,6 +399,31 @@ static LexToken lex_scan(LexState *ls, TValue *tv)
     case '|':
       lex_next(ls);
       if (ls->c != '|') return '|'; else { lex_next(ls); return TK_or_; }
+    case '/':
+      lex_next(ls);
+      if (ls->glua) {  /* GLua has C comments; the rest of its syntax is above. */
+	if (ls->c == '/') {  /* Short comment "//.*\n". */
+	  while (!lex_iseol(ls) && ls->c != LEX_EOF)
+	    lex_next(ls);
+	  continue;
+	} else if (ls->c == '*') {  /* Long comment, C style. */
+	  lex_next(ls);
+	  for (;;) {
+	    if (ls->c == '*') {
+	      if (lex_next(ls) == '/') break;
+	    } else if (ls->c == LEX_EOF) {
+	      lj_lex_error(ls, TK_eof, LJ_ERR_XLCOM);
+	    } else if (lex_iseol(ls)) {
+	      lex_newline(ls);
+	    } else {
+	      lex_next(ls);
+	    }
+	  }
+	  lex_next(ls);  /* Skip '/'. */
+	  continue;
+	}
+      }
+      return '/';
     case '"':
     case '\'':
       lex_string(ls, tv);
@@ -445,6 +473,11 @@ int lj_lex_setup(lua_State *L, LexState *ls)
   ls->lastline = 1;
   ls->endmark = 0;
   ls->fr2 = LJ_FR2;  /* Generate native bytecode by default. */
+#if LJ_NL
+  ls->glua = lj_nl_glua(L);
+#else
+  ls->glua = 0;
+#endif
   lex_next(ls);  /* Read-ahead first char. */
   if (ls->c == 0xef && ls->p + 2 <= ls->pe && (uint8_t)ls->p[0] == 0xbb &&
       (uint8_t)ls->p[1] == 0xbf) {  /* Skip UTF-8 BOM (if buffered). */

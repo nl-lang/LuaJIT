@@ -3035,7 +3035,13 @@ static int parse_stmt(LexState *ls)
     parse_break(ls);
     return !LJ_52;  /* Must be last in Lua 5.1. */
   case TK_continue: {
-    LexToken tokx = lj_lex_lookahead(ls);
+    LexToken tokx;
+    if (ls->glua) {  /* Reserved word in GLua, and a statement like any. */
+      lj_lex_next(ls);
+      parse_continue(ls);
+      break;
+    }
+    tokx = lj_lex_lookahead(ls);
     if (!(parse_isend(tokx) || tokx == ';'))
       goto assign;  /* Soft keyword. */
     lj_lex_next(ls);
