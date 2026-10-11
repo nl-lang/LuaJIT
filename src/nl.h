@@ -89,6 +89,7 @@ LUA_API int nl_isa(lua_State *L, int idx, int type);		/* [-0, +0, -] */
 LUA_API void nl_gettype(lua_State *L, const char *name);	/* [-0, +1, -] */
 LUA_API void nl_settype(lua_State *L, int idx, const char *name,
 			int parent);				/* [-0, +0, e] */
+LUA_API void nl_keyed(lua_State *L, int idx);		/* [-0, +0, e] */
 LUA_API void nl_new(lua_State *L, int type);			/* [-1, +1, e] */
 LUA_API void nl_pushrange(lua_State *L, lua_Number first, lua_Number last,
 			  int exclusive);			/* [-0, +1, m] */
