@@ -89,6 +89,16 @@ LJ_FUNCA int lj_nl_pumprt(lua_State *L);
 LJ_FUNCA void lj_nl_openhost(lua_State *L);
 LJ_FUNCA int lj_nl_include(lua_State *L);
 
+/* lib_nltext.c: NL's UTF-8 string operations (DESIGN 13.5), host.text.
+** lj_nl_strutf8 is whether a string is valid UTF-8, checked once per string
+** and remembered in it (LJ_STR_UTF8CHECKED, lj_obj.h).
+*/
+LJ_FUNCA void lj_nl_opentext(lua_State *L);
+LJ_FUNCA int lj_nl_strutf8(GCstr *s);
+
+/* lib_regex.c: NL's Regex (DESIGN 13.3), host.regex. */
+LJ_FUNCA void lj_nl_openregex(lua_State *L);
+
 /* lj_nlrt.c: the runtime chunk (the .lua files of runtime/) and the run
 ** loop of the event library (lj_nlevent.lua), as bytecode.
 */

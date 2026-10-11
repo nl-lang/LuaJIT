@@ -312,6 +312,14 @@ typedef struct GCstr {
   MSize len;		/* Size of string. */
 } GCstr;
 
+/* NL (DESIGN 13.5): whether the string is valid UTF-8, checked once and
+** remembered in the two high bits of `reserved`, which the reserved-word
+** numbers of the lexer (below 64) never reach. The lexer masks them off.
+*/
+#define LJ_STR_RESERVEDMASK	0x3f
+#define LJ_STR_UTF8CHECKED	0x80
+#define LJ_STR_UTF8VALID	0x40
+
 #define strref(r)	(&gcref((r))->str)
 #define strdata(s)	((const char *)((s)+1))
 #define strdatawr(s)	((char *)((s)+1))
