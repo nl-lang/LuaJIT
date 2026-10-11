@@ -251,6 +251,19 @@ LUA_API void nl_settype(lua_State *L, int idx, const char *name, int parent)
   lua_call(L, 3, 0);
 }
 
+/* keyed(t) (DESIGN 12, 13.1): replaces the table at idx with keyed
+** arguments made from its string keys, for a call of an NL function that
+** takes `**opts`.
+*/
+LUA_API void nl_keyed(lua_State *L, int idx)
+{
+  idx = lj_nl_absindex(L, idx);
+  lj_nl_pushrt(L, "keyed_copy");
+  lua_pushvalue(L, idx);
+  lua_call(L, 1, 1);
+  lua_replace(L, idx);
+}
+
 LUA_API void nl_new(lua_State *L, int type)
 {
   type = lj_nl_absindex(L, type);
