@@ -12,10 +12,13 @@
 ** the compiler is caught and reported as a diagnostic with the code
 ** "internal-error".
 **
-** The chunk. nlc_chunk() returns input for lua_load. Until the bytecode
-** backend exists it is Lua source text, loaded in two steps: lua_load gives a
-** function P, and P(rt), where rt is the runtime table of the state, returns
-** the file's main function (crates/nl_capi/src/driver.rs).
+** The chunk. nlc_chunk() returns input for lua_load: a bytecode dump when
+** nlc_Options.bytecode is set (crates/nl_codegen),
+** Lua source text otherwise (the oracle backend, crates/nl_luagen). Both are
+** loaded in two steps: lua_load gives a function P, and P(rt), where rt is
+** the runtime table of the state, returns the file's main function
+** (crates/nl_capi/src/driver.rs). The VM asks for bytecode; the Lua backend
+** stays reachable through `nlc build --emit=lua`.
 */
 
 #ifndef _NLC_H
@@ -45,6 +48,7 @@ typedef struct nlc_Loader {
 typedef struct nlc_Options {
   int checks;		/* NL_OPT_CHECKS */
   int strip;		/* NL_OPT_STRIP */
+  int bytecode;		/* 1: a bytecode dump; 0: Lua source (see above). */
 } nlc_Options;
 
 #define NLC_DIAG_ERROR		0

@@ -357,6 +357,7 @@ static int host_compile(lua_State *L)
   Guard *g;
   opt.checks = (int)ns->opt[NL_OPT_CHECKS];
   opt.strip = (int)ns->opt[NL_OPT_STRIP];
+  opt.bytecode = 1;  /* The VM loads dumps (nlc.h); loadstring takes both. */
   current_loader(ns, &ld);
   g = guard_new(L, NULL);
   r = nl_compile(src, len, name, &opt, &ld);
