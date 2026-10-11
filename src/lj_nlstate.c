@@ -70,25 +70,41 @@ static void idle_wait(NLState *ns) { pthread_cond_wait(&ns->idle, &ns->mtx); }
 static void idle_signal(NLState *ns) { pthread_cond_broadcast(&ns->idle); }
 #endif
 
+/* -- String lists -------------------------------------------------------- */
+
+/* Appends a copy of s[0..len] to a growable list; 0 on OOM. */
+static int strlist_push(char ***list, size_t *n, size_t *sz,
+			const char *s, size_t len)
+{
+  char *copy;
+  if (*n == *sz) {
+    size_t nsz = *sz ? *sz*2 : 8;
+    char **p = (char **)realloc(*list, nsz*sizeof(char *));
+    if (!p) return 0;
+    *list = p;
+    *sz = nsz;
+  }
+  copy = (char *)malloc(len+1);
+  if (!copy) return 0;
+  memcpy(copy, s, len);
+  copy[len] = '\0';
+  (*list)[(*n)++] = copy;
+  return 1;
+}
+
+static void strlist_free(char **list, size_t n)
+{
+  size_t i;
+  for (i = 0; i < n; i++) free(list[i]);
+  free(list);
+}
+
 /* -- Search path --------------------------------------------------------- */
 
 static int path_push(NLState *ns, const char *dir, size_t len)
 {
-  char *s;
   if (len == 0) return 1;
-  if (ns->npath == ns->szpath) {
-    size_t sz = ns->szpath ? ns->szpath*2 : 8;
-    char **p = (char **)realloc(ns->path, sz*sizeof(char *));
-    if (!p) return 0;
-    ns->path = p;
-    ns->szpath = sz;
-  }
-  s = (char *)malloc(len+1);
-  if (!s) return 0;
-  memcpy(s, dir, len);
-  s[len] = '\0';
-  ns->path[ns->npath++] = s;
-  return 1;
+  return strlist_push(&ns->path, &ns->npath, &ns->szpath, dir, len);
 }
 
 static int path_isabs(const char *p)
@@ -122,6 +138,20 @@ int lj_nl_addpath(NLState *ns, const char *dir)
     free(buf);
     return ok;
   }
+}
+
+/* -- Declaration files --------------------------------------------------- */
+
+/* nl_adddecl: the name is kept as given; the loader in effect
+** reads it when a file is compiled. A name given twice is kept once.
+*/
+int lj_nl_adddecl(NLState *ns, const char *name)
+{
+  size_t i, len = strlen(name);
+  if (len == 0) return 1;
+  for (i = 0; i < ns->ndecl; i++)
+    if (strcmp(ns->decl[i], name) == 0) return 1;
+  return strlist_push(&ns->decl, &ns->ndecl, &ns->szdecl, name, len);
 }
 
 /* The search path starts as NL_PATH, separated like the system's PATH;
@@ -181,7 +211,6 @@ void lj_nl_freestate(global_State *g)
 {
   NLState *ns = (NLState *)g->nl;
   NLPost *p;
-  size_t i;
   if (!ns) return;
   /* A callback still queued when the state closes is called once with
   ** L == NULL, so that it can free its data. One that posts
@@ -201,8 +230,8 @@ void lj_nl_freestate(global_State *g)
       p = next;
     }
   }
-  for (i = 0; i < ns->npath; i++) free(ns->path[i]);
-  free(ns->path);
+  strlist_free(ns->path, ns->npath);
+  strlist_free(ns->decl, ns->ndecl);
   sync_destroy(ns);
   free(ns);
   g->nl = NULL;

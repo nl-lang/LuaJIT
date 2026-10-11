@@ -64,6 +64,8 @@ typedef struct NLState {
   lua_Integer opt[NL_OPT__MAX+1];
   char **path;			/* Import search path. */
   size_t npath, szpath;
+  char **decl;			/* Declaration files of nl_adddecl. */
+  size_t ndecl, szdecl;
 } NLState;
 
 #define nl_state(L)	((NLState *)G(L)->nl)
@@ -72,6 +74,7 @@ typedef struct NLState {
 LJ_FUNCA void lj_nl_lock(NLState *ns);
 LJ_FUNCA void lj_nl_unlock(NLState *ns);
 LJ_FUNCA int lj_nl_addpath(NLState *ns, const char *dir);
+LJ_FUNCA int lj_nl_adddecl(NLState *ns, const char *name);
 
 /* lj_nlapi.c */
 LJ_FUNCA int lj_nl_isopen(lua_State *L);

@@ -50,6 +50,7 @@ LUA_API int nl_loadbuffer(lua_State *L, const char *buf, size_t size,
 LUA_API int nl_loadfile(lua_State *L, const char *filename);	/* [-0, +1, m] */
 LUA_API void nl_import(lua_State *L, const char *path);	/* [-0, +1, e] */
 LUA_API void nl_addpath(lua_State *L, const char *dir);	/* [-0, +0, m] */
+LUA_API void nl_adddecl(lua_State *L, const char *name);	/* [-0, +0, m] */
 
 /* As in Lua, a name that starts with neither '@' nor '=' is the source
 ** itself: it is shown as [string "first line..."].
