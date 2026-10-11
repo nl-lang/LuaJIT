@@ -548,7 +548,8 @@ LJCORE_O= lj_assert.o lj_gc.o lj_err.o lj_char.o lj_bc.o lj_obj.o lj_buf.o \
 	  lj_lib.o lj_alloc.o lib_aux.o \
 	  $(LJLIB_O) lib_init.o
 
-LJNL_O= lj_nlstate.o lj_nlapi.o lj_nlload.o lib_nl.o lib_event.o
+LJNL_O= lj_nlstate.o lj_nlapi.o lj_nlload.o lib_nl.o lib_event.o \
+	lib_nltext.o lib_regex.o
 LJNLRT_O= lj_nlrt.o
 
 LJVMCORE_O= $(LJVM_O) $(LJCORE_O) $(LJNL_O) $(LJNLRT_O)
@@ -564,7 +565,7 @@ LUAJIT_T= luajit
 
 NLBOOT_T= luajit_nlboot
 NLBOOT_O= $(LJVM_O) $(LJCORE_O) $(LJNL_O) lj_nlrt_boot.o lj_nlnocomp.o \
-	  $(LUAJIT_O)
+	  lj_nlnotext.o $(LUAJIT_O)
 NL_RUNTIME_SRC= $(sort $(wildcard $(NL_RUNTIME_DIR)/*.lua))
 
 ALL_T= $(LUAJIT_T) $(LUAJIT_A) $(LUAJIT_SO) $(HOST_T) $(NLBOOT_T)
@@ -663,9 +664,9 @@ ifeq (,$(NL_ENABLED))
   NL_COMPILER_DYNO=
   NL_COMPILER_DEP=
 else ifeq (,$(NL_LIBNLC))
-  NL_COMPILER_O= lj_nlnocomp.o
-  NL_COMPILER_DYNO= $(if $(filter %_dyn.o,$(LJVMCORE_DYNO)),lj_nlnocomp_dyn.o,lj_nlnocomp.o)
-  NL_COMPILER_DEP= lj_nlnocomp.o
+  NL_COMPILER_O= lj_nlnocomp.o lj_nlnotext.o
+  NL_COMPILER_DYNO= $(if $(filter %_dyn.o,$(LJVMCORE_DYNO)),lj_nlnocomp_dyn.o lj_nlnotext_dyn.o,lj_nlnocomp.o lj_nlnotext.o)
+  NL_COMPILER_DEP= lj_nlnocomp.o lj_nlnotext.o
 else
   NL_COMPILER_O= $(NL_LIBNLC) $(NL_LIBNLC_LIBS)
   NL_COMPILER_DYNO= $(NL_COMPILER_O)
@@ -849,6 +850,10 @@ include Makefile.dep
 LJNL_DEP= lj_nlint.h lj_nl.h lj_obj.h lj_def.h lj_arch.h lua.h luaconf.h \
 	  lauxlib.h nl.h nlc.h
 lj_nlstate.o lj_nlapi.o lj_nlload.o lib_nl.o: $(LJNL_DEP) lj_err.h lj_errmsg.h
+lj_nlload.o: nltext.h nlregex.h
+lib_nltext.o: lib_nltext.c $(LJNL_DEP) lj_str.h nltext.h
+lib_regex.o: lib_regex.c $(LJNL_DEP) lj_gc.h nlregex.h
+lj_nlnotext.o: lj_nlnotext.c nltext.h nlregex.h
 lib_event.o: lib_event.c $(LJNL_DEP)
 lj_nlrt.o: lj_nlrt.c $(LJNL_DEP) $(NLRT_DEP)
 lj_nlnocomp.o: lj_nlnocomp.c nlc.h

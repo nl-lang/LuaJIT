@@ -313,8 +313,8 @@ static LexToken lex_scan(LexState *ls, TValue *tv)
       } while (lj_char_isident(ls->c));
       s = lj_parse_keepstr(ls, ls->sb.b, sbuflen(&ls->sb));
       setstrV(ls->L, tv, s);
-      if (s->reserved > 0)  /* Reserved word? */
-	return TK_OFS + s->reserved;
+      if ((s->reserved & LJ_STR_RESERVEDMASK) > 0)  /* Reserved word? */
+	return TK_OFS + (s->reserved & LJ_STR_RESERVEDMASK);
       return TK_name;
     }
     switch (ls->c) {

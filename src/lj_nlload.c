@@ -24,6 +24,8 @@
 #endif
 
 #include "lj_nlint.h"
+#include "nltext.h"
+#include "nlregex.h"
 
 #if LJ_NL
 
@@ -473,6 +475,17 @@ void lj_nl_openhost(lua_State *L)
   lua_setfield(L, -2, "add_path");
   lua_pushcfunction(L, host_canonical);
   lua_setfield(L, -2, "canonical");
+  /* The text and regex libraries of libnlc, when it has them; without
+  ** them the runtime keeps its Lua stand-ins (runtime/nl_80_string.lua).
+  */
+  if (nltext_available()) {
+    lj_nl_opentext(L);
+    lua_setfield(L, -2, "text");
+  }
+  if (nlregex_available()) {
+    lj_nl_openregex(L);
+    lua_setfield(L, -2, "regex");
+  }
 }
 
 /* -- Loading -------------------------------------------------------------- */
