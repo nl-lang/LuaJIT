@@ -49,6 +49,11 @@ typedef struct nlc_Options {
   int checks;		/* NL_OPT_CHECKS */
   int strip;		/* NL_OPT_STRIP */
   int bytecode;		/* 1: a bytecode dump; 0: Lua source (see above). */
+  /* The declaration files in scope (GRAMMAR.md 10, API.md 2.3): ndecls
+  ** names, each read through the loader's `read` when the compile starts.
+  ** A name that cannot be read is an error of the compile. */
+  const char *const *decls;
+  size_t ndecls;
 } nlc_Options;
 
 #define NLC_DIAG_ERROR		0

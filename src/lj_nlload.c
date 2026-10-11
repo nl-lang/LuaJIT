@@ -19,8 +19,12 @@
 #include <stdio.h>
 #include <errno.h>
 #include <sys/stat.h>
-#if !LJ_TARGET_WINDOWS
+#if LJ_TARGET_WINDOWS
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#else
 #include <unistd.h>
+#include <dirent.h>
 #endif
 
 #include "lj_nlint.h"
@@ -207,6 +211,112 @@ static void disk_release(void *data, const char *name, const char *buf)
   free((void *)buf);
 }
 
+/* -- Declaration files --------------------------------------------------- */
+
+static int decl_push(char ***list, size_t *n, size_t *sz, const char *s)
+{
+  size_t len = strlen(s);
+  char *copy;
+  if (*n == *sz) {
+    size_t nsz = *sz ? *sz*2 : 8;
+    char **p = (char **)realloc(*list, nsz*sizeof(char *));
+    if (!p) return 0;
+    *list = p;
+    *sz = nsz;
+  }
+  copy = (char *)malloc(len+1);
+  if (!copy) return 0;
+  memcpy(copy, s, len+1);
+  (*list)[(*n)++] = copy;
+  return 1;
+}
+
+static int decl_cmp(const void *a, const void *b)
+{
+  return strcmp(*(const char *const *)a, *(const char *const *)b);
+}
+
+static int is_decl_name(const char *name)
+{
+  size_t len = strlen(name);
+  return len > 5 && strcmp(name + len - 5, ".d.nl") == 0;
+}
+
+/* Appends dir/name for every .d.nl in dir, in name order, to the list;
+** a directory that cannot be read contributes nothing. 0 on OOM.
+*/
+static int decl_scan(char ***list, size_t *n, size_t *sz, const char *dir)
+{
+  size_t first = *n, dlen = strlen(dir);
+  char cand[NL_MAXPATH];
+#if LJ_TARGET_WINDOWS
+  WIN32_FIND_DATAA fd;
+  HANDLE h;
+  if (dlen + 7 >= sizeof(cand)) return 1;
+  memcpy(cand, dir, dlen);
+  memcpy(cand + dlen, "\\*.d.nl", 8);
+  h = FindFirstFileA(cand, &fd);
+  if (h == INVALID_HANDLE_VALUE) return 1;
+  do {
+    if (!is_decl_name(fd.cFileName)) continue;
+    if (dlen + 1 + strlen(fd.cFileName) >= sizeof(cand)) continue;
+    memcpy(cand, dir, dlen);
+    cand[dlen] = '/';
+    strcpy(cand + dlen + 1, fd.cFileName);
+    if (!decl_push(list, n, sz, cand)) { FindClose(h); return 0; }
+  } while (FindNextFileA(h, &fd));
+  FindClose(h);
+#else
+  DIR *d = opendir(dir);
+  struct dirent *e;
+  if (!d) return 1;
+  while ((e = readdir(d)) != NULL) {
+    if (!is_decl_name(e->d_name)) continue;
+    if (dlen + 1 + strlen(e->d_name) >= sizeof(cand)) continue;
+    memcpy(cand, dir, dlen);
+    cand[dlen] = '/';
+    strcpy(cand + dlen + 1, e->d_name);
+    if (!file_isregular(cand)) continue;
+    if (!decl_push(list, n, sz, cand)) { closedir(d); return 0; }
+  }
+  closedir(d);
+#endif
+  if (*n > first + 1) qsort(*list + first, *n - first, sizeof(char *), decl_cmp);
+  return 1;
+}
+
+/* The declaration files of a compile (nlc.h, API.md 2.3): those given to
+** nl_adddecl and, with the disk loader, every .d.nl in the directories of
+** the search path, each directory's in name order. Returns a malloc'd list
+** of malloc'd names to free with decls_free; NULL with *n == (size_t)-1 on
+** OOM.
+*/
+static char **decls_collect(NLState *ns, size_t *n)
+{
+  char **list = NULL;
+  size_t sz = 0, i;
+  *n = 0;
+  for (i = 0; i < ns->ndecl; i++)
+    if (!decl_push(&list, n, &sz, ns->decl[i])) goto oom;
+  if (!ns->hasloader) {
+    for (i = 0; i < ns->npath; i++)
+      if (!decl_scan(&list, n, &sz, ns->path[i])) goto oom;
+  }
+  return list;
+oom:
+  for (i = 0; i < *n; i++) free(list[i]);
+  free(list);
+  *n = (size_t)-1;
+  return NULL;
+}
+
+static void decls_free(char **list, size_t n)
+{
+  size_t i;
+  for (i = 0; i < n; i++) free(list[i]);
+  free(list);
+}
+
 /* The loader in effect: the host's (nl_setloader) or the disk. */
 static void current_loader(NLState *ns, nlc_Loader *ld)
 {
@@ -355,12 +465,19 @@ static int host_compile(lua_State *L)
   const char *chunk;
   size_t chunklen = 0;
   Guard *g;
+  char **decls;
+  size_t ndecls;
   opt.checks = (int)ns->opt[NL_OPT_CHECKS];
   opt.strip = (int)ns->opt[NL_OPT_STRIP];
   opt.bytecode = 1;  /* The VM loads dumps (nlc.h); loadstring takes both. */
   current_loader(ns, &ld);
   g = guard_new(L, NULL);
+  decls = decls_collect(ns, &ndecls);
+  if (ndecls == (size_t)-1) nomem(L);
+  opt.decls = (const char *const *)decls;
+  opt.ndecls = ndecls;
   r = nl_compile(src, len, name, &opt, &ld);
+  decls_free(decls, ndecls);
   if (!r) nomem(L);
   g->result = r;
   g->cleanup = guard_freeresult;
@@ -678,6 +795,11 @@ LUA_API void nl_import(lua_State *L, const char *path)
   lj_nl_pushrt(L, "import");
   lua_pushstring(L, path);
   lua_call(L, 1, 1);
+}
+
+LUA_API void nl_adddecl(lua_State *L, const char *name)
+{
+  if (!lj_nl_adddecl(nl_state(L), name)) nomem(L);
 }
 
 LUA_API void nl_addpath(lua_State *L, const char *dir)
