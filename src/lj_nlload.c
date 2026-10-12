@@ -290,7 +290,8 @@ static int decl_scan(char ***list, size_t *n, size_t *sz, const char *dir)
 
 /* The declaration files of a compile (nlc.h, API.md 2.3): those given to
 ** nl_adddecl and, with the disk loader, every .d.nl in the directories of
-** the search path, each directory's in name order. Returns a malloc'd list
+** the search path (in the sandbox, those added before it), each
+** directory's in name order. Returns a malloc'd list
 ** of malloc'd names to free with decls_free; NULL with *n == (size_t)-1 on
 ** OOM.
 */
@@ -302,7 +303,9 @@ static char **decls_collect(NLState *ns, size_t *n)
   for (i = 0; i < ns->ndecl; i++)
     if (!decl_push(&list, n, &sz, ns->decl[i])) goto oom;
   if (!ns->hasloader) {
-    for (i = 0; i < ns->npath; i++)
+    /* In the sandbox, only the directories added before it (declnpath). */
+    size_t np = ns->opt[NL_OPT_SANDBOX] ? ns->declnpath : ns->npath;
+    for (i = 0; i < np; i++)
       if (!decl_scan(&list, n, &sz, ns->path[i])) goto oom;
   }
   return list;

@@ -57,6 +57,7 @@ typedef struct NLState {
   int trampref;			/* Registry reference of the trampoline. */
   int guardref;			/* Registry reference of the guard metatable. */
   int sandboxref;		/* Registry reference of the sandbox environment. */
+  int sandboxpkgref;		/* Registry reference of the sandbox's package. */
   NLProt *prot;			/* The call the trampoline is to make. */
   const char *evname;		/* The event nl_prunevent is to run. */
   int hasloader;
@@ -66,6 +67,8 @@ typedef struct NLState {
   lua_Integer opt[NL_OPT__MAX+1];
   char **path;			/* Import search path (DESIGN 10). */
   size_t npath, szpath;
+  size_t declnpath;		/* Entries of path that feed declaration files
+				** in the sandbox: those added before it. */
   char **decl;			/* Declaration files of nl_adddecl (API.md 2.3). */
   size_t ndecl, szdecl;
 } NLState;
