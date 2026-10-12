@@ -30,7 +30,7 @@ typedef struct NLPost {
   struct NLPost *next;
 } NLPost;
 
-#define NL_OPT__MAX	5
+#define NL_OPT__MAX	6
 
 /* A pending protected call (lj_nl_protect). */
 typedef int (*NLProtF)(lua_State *L, void *ud);
@@ -56,6 +56,7 @@ typedef struct NLState {
   int intrref;			/* Registry reference of the intrinsic table (lj_nl.h). */
   int trampref;			/* Registry reference of the trampoline. */
   int guardref;			/* Registry reference of the guard metatable. */
+  int sandboxref;		/* Registry reference of the sandbox environment. */
   NLProt *prot;			/* The call the trampoline is to make. */
   const char *evname;		/* The event nl_prunevent is to run. */
   int hasloader;
@@ -92,6 +93,14 @@ LJ_FUNCA int lj_nl_pumprt(lua_State *L);
 /* lj_nlvm.c: the C side of the VM extensions. */
 LJ_FUNCA void lj_nl_openintr(lua_State *L);
 LJ_FUNCA void lj_nl_pushhostvm(lua_State *L);
+
+/* lj_nlsandbox.c: the sandbox profile (NL_OPT_SANDBOX).
+** NL_SANDBOX_NOBC is the message of a bytecode chunk handed in.
+*/
+#define NL_SANDBOX_NOBC	"bytecode loading is off in the sandbox"
+#define lj_nl_sandboxed(L)	(nl_state(L)->opt[NL_OPT_SANDBOX] != 0)
+LJ_FUNCA int lj_nl_hostsandbox(lua_State *L);
+LJ_FUNCA int lj_nl_hostloadfile(lua_State *L);
 
 /* lj_nlload.c */
 LJ_FUNCA void lj_nl_openhost(lua_State *L);

@@ -199,11 +199,13 @@ int lj_nl_newstate(global_State *g)
   setmref(g->nl_intr, NULL);
   ns->trampref = LUA_NOREF;
   ns->guardref = LUA_NOREF;
+  ns->sandboxref = LUA_NOREF;
   ns->opt[NL_OPT_CHECKS] = 1;
   ns->opt[NL_OPT_STRIP] = 0;
   ns->opt[NL_OPT_MAXWORKERS] = 64;
   ns->opt[NL_OPT_WORKERMEM] = 0;
   ns->opt[NL_OPT_GLUA] = 0;
+  ns->opt[NL_OPT_SANDBOX] = 0;
   g->nl = ns;
   if (!path_init(ns)) return -1;  /* lj_nl_freestate cleans up. */
   return 0;
@@ -353,6 +355,14 @@ LUA_API int nl_setoption(lua_State *L, int opt, lua_Integer value)
   switch (opt) {
   case NL_OPT_CHECKS: case NL_OPT_STRIP: case NL_OPT_GLUA:
     if (value != 0 && value != 1) return 0;
+    break;
+  case NL_OPT_SANDBOX:
+    /* One way: a state that has loaded untrusted code keeps the sandbox, or
+    ** that code's later calls of load_nl, include and require would load
+    ** with the full environment.
+    */
+    if (value != 0 && value != 1) return 0;
+    if (value == 0 && ns->opt[opt] != 0) return 0;
     break;
   case NL_OPT_MAXWORKERS: case NL_OPT_WORKERMEM:
     /* Stored for nl_getoption. Workers do not exist before M10. */
