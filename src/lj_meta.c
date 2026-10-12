@@ -22,9 +22,7 @@
 #include "lj_strscan.h"
 #include "lj_strfmt.h"
 #include "lj_lib.h"
-#if LJ_NL
 #include "lj_nl.h"
-#endif
 #if LJ_HASFFI
 #include "lj_ctype.h"
 #include "lj_cdata.h"

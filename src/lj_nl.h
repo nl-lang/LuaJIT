@@ -67,6 +67,11 @@ LJ_FUNCA int lj_nl_isnlfile(const char *filename);
 LJ_FUNCA int lj_nl_loadfilex(lua_State *L, const char *filename,
 			    const char *mode);
 
+#else
+
+/* Without NL no function was compiled from NL (lj_meta.c, __eq). */
+#define lj_nl_curnl(L)	0
+
 #endif
 
 #endif
