@@ -114,6 +114,7 @@ GCfunc *lj_func_newC(lua_State *L, MSize nelems, GCtab *env)
   fn->c.gct = ~LJ_TFUNC;
   fn->c.ffid = FF_C;
   fn->c.nupvalues = (uint8_t)nelems;
+  fn->c.nlflags = 0;
   /* NOBARRIER: The GCfunc is new (marked white). */
   setmref(fn->c.pc, &G(L)->bc_cfunc_ext);
   setgcref(fn->c.env, obj2gco(env));
@@ -127,6 +128,12 @@ static GCfunc *func_newL(lua_State *L, GCproto *pt, GCtab *env)
   fn->l.gct = ~LJ_TFUNC;
   fn->l.ffid = FF_LUA;
   fn->l.nupvalues = 0;  /* Set to zero until upvalues are initialized. */
+#if LJ_NL
+  /* A method's closures carry the mark (DESIGN 7.4). */
+  fn->l.nlflags = (pt->nlflags & PROTO_METHOD) ? NLFUNC_METHOD : 0;
+#else
+  fn->l.nlflags = 0;
+#endif
   /* NOBARRIER: Really a setgcref. But the GCfunc is new (marked white). */
   setmref(fn->l.pc, proto_bc(pt));
   setgcref(fn->l.env, obj2gco(env));

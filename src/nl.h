@@ -17,6 +17,7 @@
 #include <string.h>
 
 #include "lua.h"
+#include "lauxlib.h"
 
 #define NL_VERSION	"NL 0.1"
 #define NL_VERSION_NUM	100		/* major*10000 + minor*100 + patch */
@@ -102,6 +103,43 @@ LUALIB_API int nlL_typeerror(lua_State *L, int narg,
 			     const char *expected);		/* [-0, +0, v] */
 LUALIB_API const char *nlL_tolstring(lua_State *L, int idx,
 				     size_t *len);		/* [-0, +1, e] */
+
+/* -- Methods and member calls (API.md 2.4) ------------------------------- */
+
+LUA_API void nl_markmethod(lua_State *L, int idx);		/* [-0, +0, -] */
+LUA_API int nl_ismethod(lua_State *L, int idx);		/* [-0, +0, -] */
+LUALIB_API void nlL_setmethods(lua_State *L, const luaL_Reg *l); /* [-0, +0, m] */
+LUALIB_API void nlL_callmember(lua_State *L, const char *name, int nargs,
+			       int nresults);	/* [-(nargs+1), +nresults, e] */
+
+/* -- Operators (API.md 2.6) ---------------------------------------------- */
+
+#define NL_OPADD	0
+#define NL_OPSUB	1
+#define NL_OPMUL	2
+#define NL_OPDIV	3
+#define NL_OPMOD	4
+#define NL_OPPOW	5
+#define NL_OPIDIV	6
+#define NL_OPBAND	7
+#define NL_OPBOR	8
+#define NL_OPBXOR	9
+#define NL_OPSHL	10
+#define NL_OPSHR	11
+#define NL_OPUSHR	12
+#define NL_OPCONCAT	13
+#define NL_OPUNM	14	/* Unary: one operand. */
+#define NL_OPBNOT	15	/* Unary: one operand. */
+
+#define NL_OPEQ		0
+#define NL_OPLT		1
+#define NL_OPLE		2
+#define NL_OPGT		3
+#define NL_OPGE		4
+
+LUA_API void nl_arith(lua_State *L, int op);		/* [-(2|1), +1, e] */
+LUA_API int nl_compare(lua_State *L, int idx1, int idx2, int op); /* [-0, +0, e] */
+LUA_API void nl_len(lua_State *L, int idx);			/* [-0, +1, e] */
 
 /* -- Exceptions (API.md 2.7) --------------------------------------------- */
 

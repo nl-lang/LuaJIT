@@ -357,7 +357,14 @@ GCproto *lj_bcread_proto(LexState *ls)
   pt->sizekn = sizekn;
   pt->sizept = sizept;
   pt->sizeuv = (uint8_t)sizeuv;
-  pt->flags = (uint8_t)flags;
+  pt->flags = (uint8_t)(flags & (PROTO_CHILD|PROTO_VARARG|PROTO_FFI|PROTO_BITOP));
+#if LJ_NL
+  pt->nlflags = (bcread_flags(ls) & BCDUMP_F_NL) ?
+    (uint8_t)(((flags & BCDUMP_PF_METHOD) ? PROTO_METHOD : 0) |
+	      ((flags & BCDUMP_PF_NL) ? PROTO_NL : 0)) : 0;
+#else
+  (void)0;
+#endif
   pt->trace = 0;
   setgcref(pt->chunkname, obj2gco(ls->chunkname));
 
@@ -401,6 +408,11 @@ static int bcread_header(LexState *ls)
   bcread_flags(ls) = flags = bcread_uleb128(ls);
   if ((flags & ~(BCDUMP_F_KNOWN)) != 0) return 0;
   if ((flags & BCDUMP_F_FR2) != (uint32_t)ls->fr2*BCDUMP_F_FR2) return 0;
+#if LJ_NL
+  /* KINTR needs the intrinsic table, which luaopen_nl fills. */
+  if ((flags & BCDUMP_F_NL) && mref(G(ls->L)->nl_intr, TValue) == NULL)
+    return 0;
+#endif
   if ((flags & BCDUMP_F_FFI)) {
 #if LJ_HASFFI
     lua_State *L = ls->L;

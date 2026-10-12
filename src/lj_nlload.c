@@ -470,6 +470,7 @@ static int host_compile(lua_State *L)
   opt.checks = (int)ns->opt[NL_OPT_CHECKS];
   opt.strip = (int)ns->opt[NL_OPT_STRIP];
   opt.bytecode = 1;  /* The VM loads dumps (nlc.h); loadstring takes both. */
+  opt.level = 1;     /* The fork's opcodes and events (IMPLEMENTATION_PLAN M5). */
   current_loader(ns, &ld);
   g = guard_new(L, NULL);
   decls = decls_collect(ns, &ndecls);
@@ -593,6 +594,9 @@ void lj_nl_openhost(lua_State *L)
   lua_setfield(L, -2, "add_path");
   lua_pushcfunction(L, host_canonical);
   lua_setfield(L, -2, "canonical");
+  /* The VM extensions (M5): host.vm.markmethod, host.vm.ismethod. */
+  lj_nl_pushhostvm(L);
+  lua_setfield(L, -2, "vm");
   /* The text and regex libraries of libnlc (M6), when it has them; without
   ** them the runtime keeps its Lua stand-ins (runtime/nl_80_string.lua).
   */

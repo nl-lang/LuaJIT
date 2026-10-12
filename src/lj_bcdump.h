@@ -44,8 +44,23 @@
 #define BCDUMP_F_FFI		0x04
 #define BCDUMP_F_FR2		0x08
 #define BCDUMP_F_BITOP		0x10
+/* NL (DESIGN 14.2): the dump uses NL's opcodes or prototype flags. Stock
+** LuaJIT rejects it, since the flag is not in its BCDUMP_F_KNOWN.
+*/
+#define BCDUMP_F_NL		0x20
 
+#if LJ_NL
+#define BCDUMP_F_KNOWN		(BCDUMP_F_NL*2-1)
+#else
 #define BCDUMP_F_KNOWN		(BCDUMP_F_BITOP*2-1)
+#endif
+
+/* NL: GCproto.nlflags in the prototype's flags byte of a BCDUMP_F_NL dump.
+** The in-memory bits 0x08 (PROTO_NOJIT) and 0x10 (PROTO_ILOOP) are never
+** written, so these take their place.
+*/
+#define BCDUMP_PF_METHOD	0x08
+#define BCDUMP_PF_NL		0x10
 
 #define BCDUMP_F_DETERMINISTIC	0x80000000
 

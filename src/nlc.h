@@ -49,6 +49,11 @@ typedef struct nlc_Options {
   int checks;		/* NL_OPT_CHECKS */
   int strip;		/* NL_OPT_STRIP */
   int bytecode;		/* 1: a bytecode dump; 0: Lua source (see above). */
+  /* The feature level of a bytecode dump (IMPLEMENTATION_PLAN M5): 0 uses
+  ** stock opcodes only and loads in a stock LuaJIT; 1 uses the fork's
+  ** opcodes, prototype flags and events (DESIGN 14.2) and is marked
+  ** BCDUMP_F_NL. The VM asks for 1. Ignored for Lua source. */
+  int level;
   /* The declaration files in scope (GRAMMAR.md 10, API.md 2.3): ndecls
   ** names, each read through the loader's `read` when the compile starts.
   ** A name that cannot be read is an error of the compile. */
@@ -71,6 +76,28 @@ typedef struct nlc_Diagnostic {
 } nlc_Diagnostic;
 
 typedef struct nlc_Result nlc_Result;
+
+/* The intrinsic table of KINTR (DESIGN 14.2, IMPLEMENTATION_PLAN M5). Entry
+** i, counting from 1 in this order, is rt[name_i]: the value of that field of
+** the runtime table when the nl library opened (lj_nlvm.c). Level-1 code
+** loads an intrinsic with KINTR and its index, so the compiler
+** (crates/nl_codegen/src/intrinsics.rs) and the VM must agree on this list;
+** a test there checks it against this header. The first three entries are
+** what the VM itself uses (lj_nl.h): NL's String library, the character
+** indexing of strings, and the runtime's generic operator handlers by event
+** name. New names go at the end.
+*/
+#define NLC_INTRINSICS(_) \
+  _(String) _(strindex) _(opgeneric) \
+  _(as) _(async) _(band) _(bnot) _(bor) _(bxor) _(check) _(enum) _(eq) \
+  _(ge) _(gettype) _(gt) _(idiv) _(implement) _(import_from) _(index) \
+  _(inrange) _(isa) _(iskw) _(istable) _(iter) _(keyed) _(kwlast) _(kwpop) \
+  _(kwtake) _(lazy) _(le) _(len) _(listcat) _(lmethod) _(lt) _(matcherror) \
+  _(mcall) _(member) _(method) _(mget) _(module) _(negate) _(new) _(nokw) \
+  _(nokwrest) _(on) _(opdef) _(optional) _(owner) _(primmethod) _(primop) \
+  _(range) _(record) _(register) _(rest) _(ret) _(retn) _(shl) _(shr) \
+  _(spawn) _(step) _(submodule) _(tostring) _(try) _(union) _(unpack) \
+  _(unpackkw) _(ushr) _(when)
 
 /* Compiles one NL source file. `chunkname` follows Lua's chunk names: "@name"
 ** for a file with canonical name `name`, "=text" for anything else. `loader`

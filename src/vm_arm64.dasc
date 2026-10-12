@@ -905,7 +905,7 @@ static void build_subroutines(BuildCtx *ctx)
   |
   |->vmeta_len:
   |  add CARG2, BASE, RC, lsl #3
-#if LJ_52
+#if LJ_52 || LJ_NL
   |  mov TAB:RC, TAB:CARG1		// Save table (ignored for other types).
 #endif
   |   str BASE, L->base
@@ -913,7 +913,7 @@ static void build_subroutines(BuildCtx *ctx)
   |   str PC, SAVE_PC
   |  bl extern lj_meta_len		// (lua_State *L, TValue *o)
   |  // Returns NULL (retry) or TValue * (metamethod base).
-#if LJ_52
+#if LJ_52 || LJ_NL
   |  cbnz CRET1, ->vmeta_binop		// Binop call for compatibility.
   |  mov TAB:CARG1, TAB:RC
   |  b ->BC_LEN_Z
@@ -2405,21 +2405,43 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
   /* Remember: all ops branch for a true comparison, fall through otherwise. */
 
   case BC_ISLT: case BC_ISGE: case BC_ISLE: case BC_ISGT:
+#if LJ_NL
+  case BC_CMPGT: case BC_CMPNGT: case BC_CMPGE: case BC_CMPNGE:
+#endif
+  {
+    /* NL's CMPGT/CMPNGT/CMPGE/CMPNGE (DESIGN 9.6): for two numbers, a > b
+    ** is b < a, so they run the ISLT/ISGE/ISLE/ISGT code with the operands
+    ** swapped. The fallback gets the original operands and the NL opcode
+    ** (vmeta_comp passes the opcode byte of INS to lj_meta_comp).
+    */
+    int cop = op, swap = 0;
+#if LJ_NL
+    if (op >= BC_CMPGT) {
+      swap = 1;
+      cop = (op >= BC_CMPGE ? BC_ISLE : BC_ISLT) | (op & 1);
+    }
+#endif
     |  // RA = src1, RC = src2, JMP with RC = target
-    |  ldr CARG1, [BASE, RA, lsl #3]
-    |    ldrh RBw, [PC, # OFS_RD]
-    |   ldr CARG2, [BASE, RC, lsl #3]
+    if (swap) {
+      |  ldr CARG1, [BASE, RC, lsl #3]
+      |    ldrh RBw, [PC, # OFS_RD]
+      |   ldr CARG2, [BASE, RA, lsl #3]
+    } else {
+      |  ldr CARG1, [BASE, RA, lsl #3]
+      |    ldrh RBw, [PC, # OFS_RD]
+      |   ldr CARG2, [BASE, RC, lsl #3]
+    }
     |    add PC, PC, #4
     |    add RB, PC, RB, lsl #2
     |    sub RB, RB, #0x20000
     |  checkint CARG1, >3
     |   checkint CARG2, >4
     |  cmp CARG1w, CARG2w
-    if (op == BC_ISLT) {
+    if (cop == BC_ISLT) {
       |  csel PC, RB, PC, lt
-    } else if (op == BC_ISGE) {
+    } else if (cop == BC_ISGE) {
       |  csel PC, RB, PC, ge
-    } else if (op == BC_ISLE) {
+    } else if (cop == BC_ISLE) {
       |  csel PC, RB, PC, le
     } else {
       |  csel PC, RB, PC, gt
@@ -2427,37 +2449,38 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
     |1:
     |  ins_next
     |
-    |3:  // RA not int.
-    |    ldr FARG1, [BASE, RA, lsl #3]
+    |3:  // CARG1 not int.
     |  blo ->vmeta_comp
-    |    ldr FARG2, [BASE, RC, lsl #3]
+    |    fmov FARG1, CARG1
+    |    fmov FARG2, CARG2
     |   cmp TISNUMhi, CARG2, lsr #32
     |   bhi >5
     |   bne ->vmeta_comp
-    |  // RA number, RC int.
+    |  // CARG1 number, CARG2 int.
     |  scvtf FARG2, CARG2w
     |  b >5
     |
-    |4:  // RA int, RC not int
-    |    ldr FARG2, [BASE, RC, lsl #3]
+    |4:  // CARG1 int, CARG2 not int
+    |    fmov FARG2, CARG2
     |   blo ->vmeta_comp
-    |  // RA int, RC number.
+    |  // CARG1 int, CARG2 number.
     |  scvtf FARG1, CARG1w
     |
-    |5:  // RA number, RC number
+    |5:  // CARG1 number, CARG2 number
     |  fcmp FARG1, FARG2
     |  // To preserve NaN semantics GE/GT branch on unordered, but LT/LE don't.
-    if (op == BC_ISLT) {
+    if (cop == BC_ISLT) {
       |  csel PC, RB, PC, lo
-    } else if (op == BC_ISGE) {
+    } else if (cop == BC_ISGE) {
       |  csel PC, RB, PC, hs
-    } else if (op == BC_ISLE) {
+    } else if (cop == BC_ISLE) {
       |  csel PC, RB, PC, ls
     } else {
       |  csel PC, RB, PC, hi
     }
     |  b <1
     break;
+  }
 
   case BC_ISEQV: case BC_ISNEV:
     vk = op == BC_ISEQV;
@@ -2676,6 +2699,42 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
     |  ins_next
     break;
 
+#if LJ_NL
+  case BC_ISMETH:
+    |  // RA = member, RC = receiver, JMP with RD = target (DESIGN 7.4).
+    |  // Falls through into the auto-call when the member is a method of
+    |  // the receiver; takes the jump otherwise (lj_nl_ismethod).
+    |  ldr CARG1, [BASE, RA, lsl #3]
+    |  checkfunc CARG1, >9
+    |  ldrb TMP0w, LFUNC:CARG1->nlflags
+    |  tbnz TMP0w, #0, >8			// Marked: a method.
+    |  ldr CARG2, [BASE, RC, lsl #3]
+    |  asr ITYPE, CARG2, #47
+    |  cmn ITYPE, #-LJ_TSTR
+    |  beq >8				// A string receiver.
+    |  cmp TISNUMhi, CARG2, lsr #32
+    |  bhs >8				// A number receiver.
+    |  add TMP0, ITYPE, #3
+    |  cmp TMP0, #1
+    |  bls >8				// A boolean receiver.
+    |  cmn ITYPE, #-LJ_TUDATA
+    |  bne >9
+    |  and CARG2, CARG2, #LJ_GCVMASK	// Userdata: __methods in its metatable.
+    |  mov CARG1, GL
+    |  bl extern lj_nl_ismethod_ud	// (global_State *g, GCudata *ud)
+    |  cbnz CRET1w, >8
+    |9:  // Not a method: take the JMP.
+    |  ldrh RBw, [PC, # OFS_RD]
+    |  add PC, PC, #4
+    |  add RB, PC, RB, lsl #2
+    |  sub PC, RB, #0x20000
+    |  ins_next
+    |8:  // A method: skip the JMP.
+    |  add PC, PC, #4
+    |  ins_next
+    break;
+#endif
+
   /* -- Unary ops --------------------------------------------------------- */
 
   case BC_MOV:
@@ -2728,7 +2787,7 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
     |2:
     |  cmn ITYPE, #-LJ_TTAB
     |  bne ->vmeta_len
-#if LJ_52
+#if LJ_52 || LJ_NL
     |  ldr TAB:CARG2, TAB:CARG1->metatable
     |  cbnz TAB:CARG2, >9
     |3:
@@ -2738,7 +2797,7 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
     |  // Returns uint32_t (but less than 2^31).
     |  b <1
     |
-#if LJ_52
+#if LJ_52 || LJ_NL
     |9:
     |  ldrb TMP1w, TAB:CARG2->nomm
     |  tbnz TMP1w, #MM_len, <3		// 'no __len' flag set: done.
@@ -2994,6 +3053,15 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
     |   blt <1
     |  ins_next_
     break;
+#if LJ_NL
+  case BC_KINTR:
+    |  // RA = dst, RC = intrinsic index (DESIGN 14.2): g->nl_intr[RC].
+    |  ldr TMP0, GL->nl_intr
+    |  ldr TMP0, [TMP0, RC, lsl #3]
+    |  str TMP0, [BASE, RA, lsl #3]
+    |  ins_next
+    break;
+#endif
 
   /* -- Upvalue and function ops ------------------------------------------ */
 
@@ -3506,6 +3574,62 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
     break;
 
   /* -- Calls and vararg handling ----------------------------------------- */
+
+#if LJ_NL
+  case BC_MSELF:
+    |  // RA = base, RB = MULTRES flag, RC = fixed args incl. the receiver.
+    |  // Before CALLM/CALLMT (DESIGN 7.4): sets MULTRES to (nargs+1)*8,
+    |  // keeping the receiver when the callee is a method of it and
+    |  // dropping it (the other arguments shift down) otherwise.
+    |  decode_RB RB, INS
+    |  and RC, RC, #0xff
+    |  cbz RB, >1
+    |  ldr TMP0w, SAVE_MULTRES		// (m+1)*8 values from the last *M op.
+    |  add RC, RC, TMP0, lsr #3
+    |  sub RC, RC, #1
+    |1:  // RC = number of arguments, the receiver included.
+    |  add RA, BASE, RA, lsl #3
+    |  ldr CARG1, [RA]
+    |  checkfunc CARG1, >5
+    |  ldrb TMP0w, LFUNC:CARG1->nlflags
+    |  tbnz TMP0w, #0, >7			// Marked: a method.
+    |  ldr CARG2, [RA, #16]			// The receiver.
+    |  asr ITYPE, CARG2, #47
+    |  cmn ITYPE, #-LJ_TSTR
+    |  beq >7
+    |  cmp TISNUMhi, CARG2, lsr #32
+    |  bhs >7
+    |  add TMP0, ITYPE, #3
+    |  cmp TMP0, #1
+    |  bls >7
+    |  cmn ITYPE, #-LJ_TUDATA
+    |  bne >5
+    |  and CARG2, CARG2, #LJ_GCVMASK
+    |  mov CARG1, GL
+    |  bl extern lj_nl_ismethod_ud	// (global_State *g, GCudata *ud)
+    |  cbnz CRET1w, >7
+    |5:  // Not a method: drop the receiver, move the other arguments down.
+    |  add TMP1, RA, #24			// &args[1]
+    |  add TMP2, RA, #16
+    |  add TMP2, TMP2, RC, lsl #3		// One past the last argument.
+    |  cmp TMP1, TMP2
+    |  bhs >6
+    |2:
+    |  ldr TMP0, [TMP1], #8
+    |  str TMP0, [TMP1, #-16]
+    |  cmp TMP1, TMP2
+    |  blo <2
+    |6:
+    |  lsl RC, RC, #3			// ((nargs-1)+1)*8
+    |  str RCw, SAVE_MULTRES
+    |  ins_next
+    |7:  // A method: the receiver is the first argument.
+    |  add RC, RC, #1
+    |  lsl RC, RC, #3			// (nargs+1)*8
+    |  str RCw, SAVE_MULTRES
+    |  ins_next
+    break;
+#endif
 
   case BC_CALLM:
     |  // RA = base, (RB = nresults+1,) RC = extra_nargs

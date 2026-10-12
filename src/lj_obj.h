@@ -332,6 +332,7 @@ typedef struct GCudata {
   GCHeader;
   uint8_t udtype;	/* Userdata type. */
   uint8_t unused2;
+  uint8_t unused_nl[4];	/* Padding, as in GCfuncHeader. */
   GCRef env;		/* Should be at same offset in GCfunc. */
   MSize len;		/* Size of payload. */
   GCRef metatable;	/* Must be at same offset in GCtab. */
@@ -383,7 +384,8 @@ typedef struct GCproto {
   uint8_t framesize;	/* Fixed frame size. */
   MSize sizebc;		/* Number of bytecode instructions. */
 #if LJ_GC64
-  uint32_t unused_gc64;
+  uint8_t nlflags;	/* NL flags (PROTO_METHOD, PROTO_NL): fills the gap. */
+  uint8_t unused_gc64[3];
 #endif
   GCRef gclist;
   MRef k;		/* Split constant array (points to the middle). */
@@ -401,6 +403,10 @@ typedef struct GCproto {
   MRef lineinfo;	/* Compressed map from bytecode ins. to source line. */
   MRef uvinfo;		/* Upvalue names. */
   MRef varinfo;		/* Names and compressed extents of local variables. */
+#if !LJ_GC64
+  uint8_t nlflags;	/* NL flags (PROTO_METHOD, PROTO_NL). */
+  uint8_t unused_nl[3];
+#endif
 } GCproto;
 
 /* Flags for prototype. */
@@ -417,6 +423,12 @@ typedef struct GCproto {
 #define PROTO_CLCOUNT		0x20	/* Base of saturating 3 bit counter. */
 #define PROTO_CLC_BITS		3
 #define PROTO_CLC_POLY		(3*PROTO_CLCOUNT)  /* Polymorphic threshold. */
+
+/* NL flags, in GCproto.nlflags (DESIGN 14.2). In a dump they travel in the
+** prototype's flags byte as BCDUMP_PF_METHOD/BCDUMP_PF_NL (lj_bcdump.h).
+*/
+#define PROTO_METHOD		0x01	/* A method: closures get NLFUNC_METHOD. */
+#define PROTO_NL		0x02	/* Compiled from NL: NL's string library and operator rules. */
 
 #define PROTO_UV_LOCAL		0x8000	/* Upvalue for local slot. */
 #define PROTO_UV_IMMUTABLE	0x4000	/* Immutable upvalue. */
@@ -459,10 +471,17 @@ typedef struct GCupval {
 
 /* -- Function object (closures) ------------------------------------------ */
 
-/* Common header for functions. env should be at same offset in GCudata. */
+/* Common header for functions. env should be at same offset in GCudata.
+** nlflags (NL, DESIGN 7.4) fills the alignment gap in GC64 mode; GCudata
+** keeps the same padding so that env stays at one offset.
+*/
 #define GCfuncHeader \
   GCHeader; uint8_t ffid; uint8_t nupvalues; \
+  uint8_t nlflags; uint8_t unused_nl[3]; \
   GCRef env; GCRef gclist; MRef pc
+
+/* GCfunc.nlflags. */
+#define NLFUNC_METHOD		0x01	/* Marked as a method (nl_markmethod, PROTO_METHOD). */
 
 typedef struct GCfuncC {
   GCfuncHeader;
@@ -562,6 +581,19 @@ enum {
 #define MM_ipairs	255
 #endif
 
+/* NL's events (DESIGN 14.2), after the stock entries so that those keep
+** their indices: `>` and `>=`; the operators Lua 5.1 lacks; `for ... in`;
+** the coerce hook; and `__methods`, which is not an event but a metatable
+** field that lj_nl_ismethod looks up by the same means.
+*/
+#if LJ_NL
+#define MMDEF_NL(_) \
+  _(gt) _(ge) _(idiv) _(band) _(bor) _(bxor) _(bnot) _(shl) _(shr) _(ushr) \
+  _(iter) _(coerce) _(methods)
+#else
+#define MMDEF_NL(_)
+#endif
+
 #define MMDEF(_) \
   _(index) _(newindex) _(gc) _(mode) _(eq) _(len) \
   /* Only the above (fast) metamethods are negative cached (max. 8). */ \
@@ -569,7 +601,7 @@ enum {
   /* The following must be in ORDER ARITH. */ \
   _(add) _(sub) _(mul) _(div) _(mod) _(pow) _(unm) \
   /* The following are used in the standard libraries. */ \
-  _(metatable) _(tostring) MMDEF_FFI(_) MMDEF_PAIRS(_)
+  _(metatable) _(tostring) MMDEF_FFI(_) MMDEF_PAIRS(_) MMDEF_NL(_)
 
 typedef enum {
 #define MMENUM(name)	MM_##name,
@@ -672,6 +704,7 @@ typedef struct global_State {
   GCRef gcroot[GCROOT_MAX];  /* GC roots. */
 #if LJ_NL
   void *nl;		/* NL per-state data (NLState, lj_nl.h). */
+  MRef nl_intr;		/* KINTR: the array part of the intrinsic table (lj_nlint.h), or NULL. */
 #endif
 } global_State;
 

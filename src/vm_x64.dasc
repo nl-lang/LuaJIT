@@ -1082,7 +1082,7 @@ static void build_subroutines(BuildCtx *ctx)
   |  call extern lj_meta_len		// (lua_State *L, TValue *o)
   |  // NULL (retry) or TValue * (metamethod) returned in eax (RC).
   |  mov BASE, L:RB->base
-#if LJ_52
+#if LJ_52 || LJ_NL
   |  test RC, RC
   |  jne ->vmeta_binop			// Binop call for compatibility.
   |  movzx RDd, PC_RD
@@ -2955,7 +2955,7 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
   /* Remember: all ops branch for a true comparison, fall through otherwise. */
 
   |.macro jmp_comp, lt, ge, le, gt, target
-  ||switch (op) {
+  ||switch (cop) {
   ||case BC_ISLT:
   |   lt target
   ||break;
@@ -2973,10 +2973,32 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
   |.endmacro
 
   case BC_ISLT: case BC_ISGE: case BC_ISLE: case BC_ISGT:
+#if LJ_NL
+  case BC_CMPGT: case BC_CMPNGT: case BC_CMPGE: case BC_CMPNGE:
+#endif
+  {
+    /* NL's CMPGT/CMPNGT/CMPGE/CMPNGE (DESIGN 9.6): for two numbers, a > b
+    ** is b < a, so they run the ISLT/ISGE/ISLE/ISGT code with the operands
+    ** swapped. The fallback gets the original operands and the NL opcode
+    ** (vmeta_comp reloads RA/RD from PC and passes the opcode byte of INS
+    ** to lj_meta_comp).
+    */
+    int cop = op, swap = 0;
+#if LJ_NL
+    if (op >= BC_CMPGT) {
+      swap = 1;
+      cop = (op >= BC_CMPGE ? BC_ISLE : BC_ISLT) | (op & 1);
+    }
+#endif
     |  // RA = src1, RD = src2, JMP with RD = target
     |  ins_AD
-    |  mov ITYPE, [BASE+RA*8]
-    |  mov RB, [BASE+RD*8]
+    if (swap) {
+      |  mov ITYPE, [BASE+RD*8]
+      |  mov RB, [BASE+RA*8]
+    } else {
+      |  mov ITYPE, [BASE+RA*8]
+      |  mov RB, [BASE+RD*8]
+    }
     |  mov RA, ITYPE
     |  mov RD, RB
     |  sar ITYPE, 47
@@ -3031,6 +3053,7 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
     |  ins_next
     |.endif
     break;
+  }
 
   case BC_ISEQV: case BC_ISNEV:
     vk = op == BC_ISEQV;
@@ -3279,6 +3302,47 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
     |  ins_next
     break;
 
+#if LJ_NL
+  case BC_ISMETH:
+    |  ins_AD	// RA = member, RD = receiver, JMP with RD = target (DESIGN 7.4).
+    |  // Falls through into the auto-call when the member is a method of
+    |  // the receiver; takes the jump otherwise (lj_nl_ismethod).
+    |  mov LFUNC:RB, [BASE+RA*8]
+    |  checkfunc LFUNC:RB, >9
+    |  test byte LFUNC:RB->nlflags, NLFUNC_METHOD
+    |  jnz >8				// Marked: a method.
+    |  mov RD, [BASE+RD*8]
+    |  mov ITYPE, RD
+    |  sar ITYPE, 47
+    |  cmp ITYPEd, LJ_TSTR
+    |  je >8				// A string receiver.
+    |  cmp ITYPEd, LJ_TISNUM
+    |  jb >8				// A number receiver.
+    |  lea TMPRd, [ITYPE+3]
+    |  cmp TMPRd, 1
+    |  jbe >8				// A boolean receiver (LJ_TTRUE, LJ_TFALSE).
+    |  cmp ITYPEd, LJ_TUDATA
+    |  jne >9
+    |  cleartp RD			// Userdata: __methods in its metatable.
+    |  mov RB, BASE			// Save BASE.
+    |  mov CARG2, RD			// Caveat: CARG2 == BASE on X64WIN, saved above.
+    |  lea GL:CARG1, [DISPATCH+GG_DISP2G]
+    |  call extern lj_nl_ismethod_ud	// (global_State *g, GCudata *ud)
+    |  // 0/1 returned in eax (RD).
+    |  mov BASE, RB			// Restore BASE.
+    |  test RDd, RDd
+    |  jnz >8
+    |9:  // Not a method: take the JMP.
+    |  add PC, 4
+    |  movzx RDd, PC_RD
+    |  branchPC RD
+    |  ins_next
+    |8:  // A method: skip the JMP.
+    |  add PC, 4
+    |  ins_next
+    break;
+#endif
+
   /* -- Unary ops --------------------------------------------------------- */
 
   case BC_MOV:
@@ -3350,7 +3414,7 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
     |2:
     |  cmp ITYPEd, LJ_TTAB; jne ->vmeta_len
     |  mov TAB:CARG1, TAB:RD
-#if LJ_52
+#if LJ_52 || LJ_NL
     |  mov TAB:RB, TAB:RD->metatable
     |  cmp TAB:RB, 0
     |  jnz >9
@@ -3368,7 +3432,7 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
     |  mov BASE, RB			// Restore BASE.
     |  movzx RAd, PC_RA
     |  jmp <1
-#if LJ_52
+#if LJ_52 || LJ_NL
     |9:  // Check for __len.
     |  test byte TAB:RB->nomm, 1<<MM_len
     |  jnz <3
@@ -3656,6 +3720,15 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
     |  jbe <1
     |  ins_next
     break;
+#if LJ_NL
+  case BC_KINTR:
+    |  ins_AD	// RA = dst, RD = intrinsic index (DESIGN 14.2): g->nl_intr[RD].
+    |  mov RB, [DISPATCH+DISPATCH_GL(nl_intr)]
+    |  mov RB, [RB+RD*8]
+    |  mov [BASE+RA*8], RB
+    |  ins_next
+    break;
+#endif
 
   /* -- Upvalue and function ops ------------------------------------------ */
 
@@ -4215,6 +4288,77 @@ static void build_ins(BuildCtx *ctx, BCOp op, int defop)
     break;
 
   /* -- Calls and vararg handling ----------------------------------------- */
+
+#if LJ_NL
+  case BC_MSELF:
+    |  ins_ABC	// RA = base, RB = MULTRES flag, RC = fixed args incl. the receiver.
+    |  // Before CALLM/CALLMT (DESIGN 7.4): sets MULTRES to nargs+1,
+    |  // keeping the receiver when the callee is a method of it and
+    |  // dropping it (the other arguments shift down) otherwise.
+    |  test RBd, RBd
+    |  jz >1
+    |  add RCd, MULTRES		// m+1 values from the last *M op.
+    |  sub RCd, 1
+    |1:  // RC = number of arguments, the receiver included.
+    |  mov LFUNC:RB, [BASE+RA*8]
+    |  checkfunc LFUNC:RB, >5
+    |  test byte LFUNC:RB->nlflags, NLFUNC_METHOD
+    |  jnz >7				// Marked: a method.
+    |  mov RB, [BASE+RA*8+16]		// The receiver.
+    |  mov ITYPE, RB
+    |  sar ITYPE, 47
+    |  cmp ITYPEd, LJ_TSTR
+    |  je >7				// A string receiver.
+    |  cmp ITYPEd, LJ_TISNUM
+    |  jb >7				// A number receiver.
+    |  lea TMPRd, [ITYPE+3]
+    |  cmp TMPRd, 1
+    |  jbe >7				// A boolean receiver (LJ_TTRUE, LJ_TFALSE).
+    |  cmp ITYPEd, LJ_TUDATA
+    |  jne >5
+    |  cleartp RB			// Userdata: __methods in its metatable.
+    |.if not X64WIN
+    |  mov CARG2, RB
+    |  mov RB, BASE			// Save BASE.
+    |.else
+    |  xchg CARG2, RB			// Save BASE (CARG2 == BASE).
+    |.endif
+    |  lea GL:CARG1, [DISPATCH+GG_DISP2G]
+    |  call extern lj_nl_ismethod_ud	// (global_State *g, GCudata *ud)
+    |  // 0/1 returned in eax (RD). RA and RC are gone: decode them again.
+    |  mov BASE, RB			// Restore BASE.
+    |  movzx RAd, PC_RA
+    |  movzx RBd, PC_RB
+    |  movzx TMPRd, PC_RC
+    |  test RBd, RBd
+    |  jz >2
+    |  add TMPRd, MULTRES
+    |  sub TMPRd, 1
+    |2:
+    |  test RDd, RDd			// RD == RC: test the result before
+    |  mov RCd, TMPRd			// the count takes its register.
+    |  jnz >7
+    |5:  // Not a method: drop the receiver, move the other arguments down.
+    |  lea RB, [BASE+RA*8+24]		// &args[1]
+    |  lea RA, [BASE+RA*8+16]
+    |  lea RA, [RA+RC*8]		// One past the last argument.
+    |  cmp RB, RA
+    |  jae >6
+    |3:
+    |  mov ITYPE, [RB]
+    |  mov [RB-8], ITYPE
+    |  add RB, 8
+    |  cmp RB, RA
+    |  jb <3
+    |6:
+    |  mov MULTRES, RCd			// (nargs-1)+1
+    |  ins_next
+    |7:  // A method: the receiver is the first argument.
+    |  add RCd, 1
+    |  mov MULTRES, RCd			// nargs+1
+    |  ins_next
+    break;
+#endif
 
   case BC_CALL: case BC_CALLM:
     |  ins_A_C	// RA = base, (RB = nresults+1,) RC = nargs+1 | extra_nargs

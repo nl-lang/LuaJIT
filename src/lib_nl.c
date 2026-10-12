@@ -35,6 +35,7 @@ LUALIB_API int luaopen_nl(lua_State *L)
   if (!lua_istable(L, -1))
     luaL_error(L, "the NL runtime returned %s, not a table",
 	       luaL_typename(L, -1));
+  lj_nl_openintr(L);  /* The intrinsic table of KINTR (M5), from rt. */
   ns->rtref = luaL_ref(L, LUA_REGISTRYINDEX);
   /* include(path) is loadfile and a call (IMPLEMENTATION_PLAN M4). The
   ** runtime may define its own; it is installed only when it did not.

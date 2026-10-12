@@ -401,6 +401,11 @@ static BCReg cur_topslot(GCproto *pt, const BCIns *pc, uint32_t nres)
     ins = pc[bc_j(ins)];
   switch (bc_op(ins)) {
   case BC_CALLM: case BC_CALLMT: return bc_a(ins) + bc_c(ins) + nres-1+1+LJ_FR2;
+#if LJ_NL
+  case BC_MSELF:  /* With B set, laid out as a CALLM with C fixed args. */
+    if (bc_b(ins)) return bc_a(ins) + bc_c(ins) + nres-1+1+LJ_FR2;
+    return pt->framesize;
+#endif
   case BC_RETM: return bc_a(ins) + bc_d(ins) + nres-1;
   case BC_TSETM: return bc_a(ins) + nres-1;
   default: return pt->framesize;

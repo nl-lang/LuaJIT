@@ -2158,6 +2158,12 @@ static void asm_tail_link(ASMState *as)
     switch (bc_op(*pc)) {
     case BC_CALLM: case BC_CALLMT:
       mres -= (int32_t)(1 + LJ_FR2 + bc_a(*pc) + bc_c(*pc)); break;
+#if LJ_NL
+    case BC_MSELF:
+      if (bc_b(*pc)) mres -= (int32_t)(1 + LJ_FR2 + bc_a(*pc) + bc_c(*pc));
+      else mres = 0;
+      break;
+#endif
     case BC_RETM: mres -= (int32_t)(bc_a(*pc) + bc_d(*pc)); break;
     case BC_TSETM: mres -= (int32_t)bc_a(*pc); break;
     default: if (bc_op(*pc) < BC_FUNCF) mres = 0; break;
