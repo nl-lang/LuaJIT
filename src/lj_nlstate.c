@@ -200,6 +200,7 @@ int lj_nl_newstate(global_State *g)
   ns->trampref = LUA_NOREF;
   ns->guardref = LUA_NOREF;
   ns->sandboxref = LUA_NOREF;
+  ns->sandboxpkgref = LUA_NOREF;
   ns->opt[NL_OPT_CHECKS] = 1;
   ns->opt[NL_OPT_STRIP] = 0;
   ns->opt[NL_OPT_MAXWORKERS] = 64;
@@ -363,6 +364,12 @@ LUA_API int nl_setoption(lua_State *L, int opt, lua_Integer value)
     */
     if (value != 0 && value != 1) return 0;
     if (value == 0 && ns->opt[opt] != 0) return 0;
+    /* From now on add_path widens the import search only: a directory a
+    ** mod adds must not plant declaration files in every later compile
+    ** (lj_nlload.c, decls_collect). The option is one way, so this mark
+    ** is final.
+    */
+    if (value == 1 && ns->opt[opt] == 0) ns->declnpath = ns->npath;
     break;
   case NL_OPT_MAXWORKERS: case NL_OPT_WORKERMEM:
     /* Stored for nl_getoption. Workers do not exist before M10. */
