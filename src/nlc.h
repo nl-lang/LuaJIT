@@ -97,7 +97,8 @@ typedef struct nlc_Result nlc_Result;
   _(nokwrest) _(on) _(opdef) _(optional) _(owner) _(primmethod) _(primop) \
   _(range) _(record) _(register) _(rest) _(ret) _(retn) _(shl) _(shr) \
   _(spawn) _(step) _(submodule) _(tostring) _(try) _(union) _(unpack) \
-  _(unpackkw) _(ushr) _(when)
+  _(unpackkw) _(ushr) _(when) \
+  _(nfloor) _(nband) _(nbor) _(nbxor) _(nlshift) _(narshift) _(nrshift)
 
 /* Compiles one NL source file. `chunkname` follows Lua's chunk names: "@name"
 ** for a file with canonical name `name`, "=text" for anything else. `loader`
