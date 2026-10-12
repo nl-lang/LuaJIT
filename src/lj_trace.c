@@ -950,6 +950,11 @@ int LJ_FASTCALL lj_trace_exit(jit_State *J, void *exptr)
   switch (bc_op(*pc)) {
   case BC_CALLM: case BC_CALLMT:
     return (int)((BCReg)(L->top - L->base) - bc_a(*pc) - bc_c(*pc) - LJ_FR2);
+#if LJ_NL
+  case BC_MSELF:
+    if (!bc_b(*pc)) return 0;
+    return (int)((BCReg)(L->top - L->base) - bc_a(*pc) - bc_c(*pc) - LJ_FR2);
+#endif
   case BC_RETM:
     return (int)((BCReg)(L->top - L->base) + 1 - bc_a(*pc) - bc_d(*pc));
   case BC_TSETM:

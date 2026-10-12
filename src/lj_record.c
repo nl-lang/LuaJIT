@@ -35,6 +35,9 @@
 #include "lj_dispatch.h"
 #include "lj_vm.h"
 #include "lj_prng.h"
+#if LJ_NL
+#include "lj_nl.h"
+#endif
 
 /* Some local macros to save typing. Undef'd at the end. */
 #define IR(ref)			(&J->cur.ir[(ref)])
@@ -44,6 +47,19 @@
 
 /* Emit raw IR without passing through optimizations. */
 #define emitir_raw(ot, a, b)	(lj_ir_set(J, (ot), (a), (b)), lj_ir_emit(J))
+
+#if LJ_NL
+/* Whether the prototype being recorded is NL code (PROTO_NL). */
+#define rec_isnl(J)		((J)->pt->nlflags & PROTO_NL)
+/* An arithmetic operand the fast path takes: NL code does not convert
+** strings to numbers, Lua code does.
+*/
+#define rec_isnumber_str(J, tr) \
+  (rec_isnl(J) ? tref_isnumber(tr) : tref_isnumber_str(tr))
+#else
+#define rec_isnl(J)		0
+#define rec_isnumber_str(J, tr)	tref_isnumber_str(tr)
+#endif
 
 /* -- Sanity checks ------------------------------------------------------- */
 
@@ -1158,6 +1174,41 @@ nocheck:
   return 0;  /* No metamethod. */
 }
 
+#if LJ_NL
+/* The handler of a binary event when the left operand has none, as
+** lj_nl_rightmm decides it: the right operand's,
+** unless that is an NL method, in which case the interpreter raises (so
+** the trace aborts); or the runtime's generic handler of the event when
+** the left operand is a number, string or boolean and the right operand's
+** type has `coerce`. `ix->tab` is the right operand; `left` the left one.
+** Sets `ix->mobj` and returns 1 when there is a handler.
+*/
+static int rec_nl_rightmm(jit_State *J, RecordIndex *ix, MMS mm, TRef left)
+{
+  if (lj_record_mm_lookup(J, ix, mm)) {
+    if (tvisfunc(&ix->mobjv) &&
+	(funcV(&ix->mobjv)->c.nlflags & NLFUNC_METHOD))
+      lj_trace_err(J, LJ_TRERR_NOMM);  /* The interpreter raises. */
+    return 1;
+  }
+  if ((tref_isnumber(left) || tref_isstr(left) || tref_isbool(left)) &&
+      (tref_istab(ix->tab) || tref_isudata(ix->tab))) {
+    RecordIndex cx;
+    cx.tab = ix->tab;
+    copyTV(J->L, &cx.tabv, &ix->tabv);
+    if (lj_record_mm_lookup(J, &cx, MM_coerce)) {
+      cTValue *g = lj_nl_opgeneric(J2G(J), mm);
+      if (g) {
+	ix->mobj = lj_ir_kfunc(J, funcV(g));
+	copyTV(J->L, &ix->mobjv, g);
+	return 1;
+      }
+    }
+  }
+  return 0;
+}
+#endif
+
 /* Record call to arithmetic metamethod. */
 static TRef rec_mm_arith(jit_State *J, RecordIndex *ix, MMS mm)
 {
@@ -1170,10 +1221,17 @@ static TRef rec_mm_arith(jit_State *J, RecordIndex *ix, MMS mm)
   copyTV(J->L, basev+2+LJ_FR2, &ix->keyv);
   if (!lj_record_mm_lookup(J, ix, mm)) {  /* Lookup mm on 1st operand. */
     if (mm != MM_unm) {
+      TRef left = ix->tab;
       ix->tab = ix->key;
       copyTV(J->L, &ix->tabv, &ix->keyv);
+#if LJ_NL
+      if (rec_nl_rightmm(J, ix, mm, left))  /* Lookup mm on 2nd operand. */
+	goto ok;
+#else
+      UNUSED(left);
       if (lj_record_mm_lookup(J, ix, mm))  /* Lookup mm on 2nd operand. */
 	goto ok;
+#endif
     }
     lj_trace_err(J, LJ_TRERR_NOMM);
   }
@@ -1208,7 +1266,7 @@ static TRef rec_mm_len(jit_State *J, TRef tr, TValue *tv)
 #endif
     lj_record_call(J, func, 2);
   } else {
-    if (LJ_52 && tref_istab(tr))
+    if ((LJ_52 || LJ_NL) && tref_istab(tr))
       return emitir(IRTI(IR_ALEN), tr, TREF_NIL);
     lj_trace_err(J, LJ_TRERR_NOMM);
   }
@@ -1237,6 +1295,10 @@ static void rec_mm_equal(jit_State *J, RecordIndex *ix, int op)
     cTValue *bv;
     TRef mo1 = ix->mobj;
     TValue mo1v;
+    if (rec_isnl(J)) {  /* NL code: the left operand decides. */
+      rec_mm_callcomp(J, ix, op);
+      return;
+    }
     copyTV(J->L, &mo1v, &ix->mobjv);
     /* Avoid the 2nd lookup and the objcmp if the metatables are equal. */
     bv = &ix->keyv;
@@ -1264,7 +1326,19 @@ static void rec_mm_comp(jit_State *J, RecordIndex *ix, int op)
   copyTV(J->L, &ix->tabv, &ix->valv);
   while (1) {
     MMS mm = (op & 2) ? MM_le : MM_lt;  /* Try __le + __lt or only __lt. */
-#if LJ_52
+#if LJ_NL
+    /* Operands of different types reach the metamethods, the left operand
+    ** first, then the right one under NL's rule.
+    */
+    if (!lj_record_mm_lookup(J, ix, mm)) {  /* Lookup mm on 1st operand. */
+      ix->tab = ix->key;
+      copyTV(J->L, &ix->tabv, &ix->keyv);
+      if (!rec_nl_rightmm(J, ix, mm, ix->val))  /* Lookup mm on 2nd operand. */
+	goto nomatch;
+    }
+    rec_mm_callcomp(J, ix, op);
+    return;
+#elif LJ_52
     if (!lj_record_mm_lookup(J, ix, mm)) {  /* Lookup mm on 1st operand. */
       ix->tab = ix->key;
       copyTV(J->L, &ix->tabv, &ix->keyv);
@@ -1540,6 +1614,27 @@ TRef lj_record_idx(jit_State *J, RecordIndex *ix)
   while (!tref_istab(ix->tab)) { /* Handle non-table lookup. */
     /* Never call raw lj_record_idx() on non-table. */
     lj_assertJ(ix->idxchain != 0, "bad usage");
+#if LJ_NL
+    if (tref_isstr(ix->tab) && !ix->val && rec_isnl(J) &&
+	lj_nl_hasintr(J2G(J))) {
+      /* NL code indexing a string (lj_meta_tget): a
+      ** name is looked up in NL's String library, a fixed table of the
+      ** state; any other key calls the runtime's character indexing.
+      */
+      if (tref_isstr(ix->key)) {
+	GCtab *strlib = lj_nl_strlib(J2G(J));
+	ix->tab = lj_ir_ktab(J, strlib);
+	settabV(J->L, &ix->tabv, strlib);
+	continue;
+      } else {
+	cTValue *fn = lj_nl_intr(J2G(J), NLINTR_strindex);
+	if (!tvisfunc(fn)) lj_trace_err(J, LJ_TRERR_NOMM);
+	ix->mobj = lj_ir_kfunc(J, funcV(fn));
+	copyTV(J->L, &ix->mobjv, fn);
+	goto handlemm;
+      }
+    }
+#endif
     if (!lj_record_mm_lookup(J, ix, ix->val ? MM_newindex : MM_index))
       lj_trace_err(J, LJ_TRERR_NOMM);
   handlemm:
@@ -2192,6 +2287,59 @@ static TRef rec_cat(jit_State *J, BCReg baseslot, BCReg topslot)
   return rcd.tr;
 }
 
+#if LJ_NL
+/* -- NL method test ------------------------------------------------------ */
+
+/* The test of ISMETH and MSELF (lj_nl_ismethod), with the guards that make
+** its answer a constant of the trace: the callee is specialized as a call
+** would specialize it (a closure, or a prototype for polymorphic
+** functions, where the mark is read from the prototype or guarded on the
+** closure); the receiver's type is known; a userdata receiver's metatable
+** and its `__methods` are guarded like a metamethod lookup.
+*/
+static int rec_nl_ismethod(jit_State *J, TRef f, cTValue *fv, TRef r,
+			   cTValue *rv)
+{
+  GCfunc *fn;
+  if (!tref_isfunc(f)) return 0;  /* Type specialization suffices. */
+  fn = funcV(fv);
+  if (isluafunc(fn) && funcproto(fn)->flags >= PROTO_CLC_POLY) {
+    GCproto *pt = funcproto(fn);
+    TRef trpt = emitir(IRT(IR_FLOAD, IRT_PGC), f, IRFL_FUNC_PC);
+    emitir(IRTG(IR_EQ, IRT_PGC), trpt, lj_ir_kptr(J, proto_bc(pt)));
+    (void)lj_ir_kgc(J, obj2gco(pt), IRT_PROTO);  /* Prevent GC of proto. */
+    if (!(pt->nlflags & PROTO_METHOD)) {
+      /* Marked after creation, if at all: guard the closure's byte. */
+      TRef trfl = emitir(IRT(IR_FLOAD, IRT_U8), f, IRFL_FUNC_NLFLAGS);
+      emitir(IRTGI(IR_EQ), trfl, lj_ir_kint(J, fn->c.nlflags));
+    }
+  } else {
+    emitir(IRTG(IR_EQ, IRT_FUNC), f, lj_ir_kfunc(J, fn));
+  }
+  if ((fn->c.nlflags & NLFUNC_METHOD)) return 1;
+  if (tref_isstr(r) || tref_isnumber(r) || tref_isbool(r)) return 1;
+  if (tref_isudata(r)) {
+    GCudata *ud = udataV(rv);
+    if (ud->udtype != UDTYPE_USERDATA) {
+      /* The metatables of special userdata objects are immutable:
+      ** specialize to the type of userdata, as lj_record_mm_lookup does.
+      */
+      TRef tr = emitir(IRT(IR_FLOAD, IRT_U8), r, IRFL_UDATA_UDTYPE);
+      emitir(IRTGI(IR_EQ), tr, lj_ir_kint(J, ud->udtype));
+      return lj_nl_ismethod_ud(J2G(J), ud);
+    } else {
+      RecordIndex ix;
+      ix.tab = r;
+      copyTV(J->L, &ix.tabv, rv);
+      if (lj_record_mm_lookup(J, &ix, MM_methods))
+	return tvistruecond(&ix.mobjv);
+      return 0;
+    }
+  }
+  return 0;
+}
+#endif
+
 /* -- Record bytecode ops ------------------------------------------------- */
 
 /* Prepare for comparison. */
@@ -2352,7 +2500,37 @@ void lj_record_ins(jit_State *J)
 
   /* -- Comparison ops ---------------------------------------------------- */
 
+#if LJ_NL
+  case BC_CMPGT: case BC_CMPNGT: case BC_CMPGE: case BC_CMPNGE: {
+    /* a > b, a >= b under NL's rules (lj_meta_comp): two
+    ** numbers or two strings compare as b < a, b <= a; otherwise __gt/__ge
+    ** of the left operand, and without one the swapped __lt/__le.
+    */
+    int cop = (op >= BC_CMPGE ? BC_ISLE : BC_ISLT) | ((int)op & 1);
+    if (!((tref_isnumber(ra) && tref_isnumber(rc)) ||
+	  (tref_isstr(ra) && tref_isstr(rc))) &&
+	!(tref_iscdata(ra) || tref_iscdata(rc))) {
+      ix.tab = ix.val;
+      copyTV(J->L, &ix.tabv, &ix.valv);
+      if (lj_record_mm_lookup(J, &ix, op >= BC_CMPGE ? MM_ge : MM_gt)) {
+	rec_comp_prep(J);
+	rec_mm_callcomp(J, &ix, (int)op);
+	break;
+      }
+    }
+    /* Swap the operands and continue as ISLT/ISGE/ISLE/ISGT. */
+    { TRef tr = ra; ra = rc; rc = tr; }
+    { TValue tv; copyTV(J->L, &tv, rav); copyTV(J->L, rav, rcv); copyTV(J->L, rcv, &tv); }
+    ix.val = ra; ix.key = rc;
+    op = (BCOp)cop;
+    goto rec_comp;
+  }
+#endif
+
   case BC_ISLT: case BC_ISGE: case BC_ISLE: case BC_ISGT:
+#if LJ_NL
+  rec_comp:
+#endif
 #if LJ_HASFFI
     if (tref_iscdata(ra) || tref_iscdata(rc)) {
       rec_mm_comp_cdata(J, &ix, op, ((int)op & 2) ? MM_le : MM_lt);
@@ -2371,7 +2549,7 @@ void lj_record_ins(jit_State *J)
 	  ta = IRT_NUM;
 	} else if (ta == IRT_NUM && tc == IRT_INT) {
 	  rc = emitir(IRTN(IR_CONV), rc, IRCONV_NUM_INT);
-	} else if (LJ_52) {
+	} else if (LJ_52 || LJ_NL) {
 	  ta = IRT_NIL;  /* Force metamethod for different types. */
 	} else if (!((ta == IRT_FALSE || ta == IRT_TRUE) &&
 		     (tc == IRT_FALSE || tc == IRT_TRUE))) {
@@ -2446,6 +2624,17 @@ void lj_record_ins(jit_State *J)
     J->base[bc_a(ins)] = ra;
     break;
 
+#if LJ_NL
+  case BC_ISMETH:
+    /* The guards of rec_nl_ismethod make the test a constant of the trace;
+    ** the branch itself is recorded as IST/ISF are.
+    */
+    (void)rec_nl_ismethod(J, ra, rav, rc, rcv);
+    if (bc_a(pc[1]) < J->maxslot)
+      J->maxslot = bc_a(pc[1]);  /* Shrink used slots. */
+    break;
+#endif
+
   /* -- Unary ops --------------------------------------------------------- */
 
   case BC_NOT:
@@ -2456,16 +2645,16 @@ void lj_record_ins(jit_State *J)
   case BC_LEN:
     if (tref_isstr(rc))
       rc = emitir(IRTI(IR_FLOAD), rc, IRFL_STR_LEN);
-    else if (!LJ_52 && tref_istab(rc))
+    else if (!(LJ_52 || LJ_NL) && tref_istab(rc))
       rc = emitir(IRTI(IR_ALEN), rc, TREF_NIL);
     else
-      rc = rec_mm_len(J, rc, rcv);
+      rc = rec_mm_len(J, rc, rcv);  /* NL: __len on tables. */
     break;
 
   /* -- Arithmetic ops ---------------------------------------------------- */
 
   case BC_UNM:
-    if (tref_isnumber_str(rc)) {
+    if (rec_isnumber_str(J, rc)) {
       rc = lj_opt_narrow_unm(J, rc, rcv);
     } else {
       ix.tab = rc;
@@ -2486,7 +2675,7 @@ void lj_record_ins(jit_State *J)
   case BC_ADDVN: case BC_SUBVN: case BC_MULVN: case BC_DIVVN:
   case BC_ADDVV: case BC_SUBVV: case BC_MULVV: case BC_DIVVV: {
     MMS mm = bcmode_mm(op);
-    if (tref_isnumber_str(rb) && tref_isnumber_str(rc))
+    if (rec_isnumber_str(J, rb) && rec_isnumber_str(J, rc))
       rc = lj_opt_narrow_arith(J, rb, rc, rbv, rcv,
 			       (int)mm - (int)MM_add + (int)IR_ADD);
     else
@@ -2496,14 +2685,14 @@ void lj_record_ins(jit_State *J)
 
   case BC_MODVN: case BC_MODVV:
   recmod:
-    if (tref_isnumber_str(rb) && tref_isnumber_str(rc))
+    if (rec_isnumber_str(J, rb) && rec_isnumber_str(J, rc))
       rc = lj_opt_narrow_mod(J, rb, rc, rbv, rcv);
     else
       rc = rec_mm_arith(J, &ix, MM_mod);
     break;
 
   case BC_POW:
-    if (tref_isnumber_str(rb) && tref_isnumber_str(rc))
+    if (rec_isnumber_str(J, rb) && rec_isnumber_str(J, rc))
       rc = lj_opt_narrow_arith(J, rb, rc, rbv, rcv, IR_POW);
     else
       rc = rec_mm_arith(J, &ix, MM_pow);
@@ -2570,6 +2759,12 @@ void lj_record_ins(jit_State *J)
     break;
   case BC_KSTR: case BC_KNUM: case BC_KPRI:
     break;
+#if LJ_NL
+  case BC_KINTR:  /* The intrinsic table is fixed: a constant. */
+    rc = lj_record_constify(J, lj_nl_intr(J2G(J), rc));
+    if (!rc) rc = TREF_NIL;
+    break;
+#endif
   case BC_KSHORT:
     rc = lj_ir_kint(J, (int32_t)(int16_t)rc);
     break;
@@ -2649,6 +2844,26 @@ void lj_record_ins(jit_State *J)
     }
     lj_record_call(J, ra, (ptrdiff_t)rc-1);
     break;
+
+#if LJ_NL
+  case BC_MSELF: {
+    /* The method test on the callee and the receiver; when it
+    ** fails the arguments move down over the receiver, here in the slot
+    ** map and in the interpreter when the instruction runs. With B set,
+    ** L->top gives the count (lj_dispatch_ins, cur_topslot).
+    */
+    BCReg total = rb ? (BCReg)(J->L->top - J->L->base) - ra - 2 : rc;
+    BCReg i;
+    TRef f = getslot(J, ra);
+    TRef r = getslot(J, ra+2);
+    for (i = 1; i < total; i++) (void)getslot(J, ra+2+i);
+    if (!rec_nl_ismethod(J, f, &J->L->base[ra], r, &J->L->base[ra+2])) {
+      for (i = 1; i < total; i++) J->base[ra+2+i-1] = J->base[ra+2+i];
+      if (total > 0) J->base[ra+2+total-1] = 0;
+    }
+    break;
+  }
+#endif
 
   /* L->top is set to L->base+ra+rc+NARGS-1+1. See lj_dispatch_ins(). */
   case BC_CALLM:

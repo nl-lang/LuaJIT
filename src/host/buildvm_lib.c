@@ -445,7 +445,7 @@ void emit_lib(BuildCtx *ctx)
   } else if (ctx->mode == BUILD_bcdef) {
     int i;
     fprintf(ctx->fp, "\n};\n\n");
-    fprintf(ctx->fp, "LJ_DATADEF const uint16_t lj_bc_mode[] = {\n");
+    fprintf(ctx->fp, "LJ_DATADEF const uint32_t lj_bc_mode[] = {\n");
     fprintf(ctx->fp, "BCDEF(BCMODE)\n");
     for (i = ffasmfunc-1; i > 0; i--)
       fprintf(ctx->fp, "BCMODE_FF,\n");

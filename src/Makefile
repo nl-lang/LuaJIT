@@ -548,7 +548,7 @@ LJCORE_O= lj_assert.o lj_gc.o lj_err.o lj_char.o lj_bc.o lj_obj.o lj_buf.o \
 	  lj_lib.o lj_alloc.o lib_aux.o \
 	  $(LJLIB_O) lib_init.o
 
-LJNL_O= lj_nlstate.o lj_nlapi.o lj_nlload.o lib_nl.o lib_event.o \
+LJNL_O= lj_nlstate.o lj_nlapi.o lj_nlvm.o lj_nlload.o lib_nl.o lib_event.o \
 	lib_nltext.o lib_regex.o
 LJNLRT_O= lj_nlrt.o
 

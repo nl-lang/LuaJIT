@@ -22,6 +22,9 @@
 #include "lj_strscan.h"
 #include "lj_strfmt.h"
 #include "lj_lib.h"
+#if LJ_NL
+#include "lj_nl.h"
+#endif
 #if LJ_HASFFI
 #include "lj_ctype.h"
 #include "lj_cdata.h"
@@ -148,6 +151,20 @@ cTValue *lj_meta_tget(lua_State *L, cTValue *o, cTValue *k)
       if (!tvisnil(tv) ||
 	  !(mo = lj_meta_fast(L, tabref(t->metatable), MM_index)))
 	return tv;
+#if LJ_NL
+    } else if (tvisstr(o) && lj_nl_hasintr(G(L)) && lj_nl_curnl(L)) {
+      /* NL code indexing a string: a name is looked
+      ** up in NL's String library; a number or a range goes to the
+      ** runtime's character indexing. Lua code keeps the string table.
+      */
+      if (tvisstr(k)) {
+	cTValue *tv = lj_tab_getstr(lj_nl_strlib(G(L)), strV(k));
+	return tv ? tv : niltv(L);
+      }
+      mo = lj_nl_intr(G(L), NLINTR_strindex);
+      L->top = mmcall(L, lj_cont_ra, mo, o, k);
+      return NULL;  /* Trigger metamethod call. */
+#endif
     } else if (tvisnil(mo = lj_meta_lookup(L, o, MM_index))) {
       lj_err_optype(L, o, LJ_ERR_OPINDEX);
       return NULL;  /* unreachable */
@@ -214,6 +231,45 @@ static cTValue *str2num(cTValue *o, TValue *n)
     return NULL;
 }
 
+#if LJ_NL
+/* A number operand, int converted; no string coercion. */
+static cTValue *num2num(cTValue *o, TValue *n)
+{
+  if (tvisnum(o))
+    return o;
+  else if (tvisint(o))
+    return (setnumV(n, (lua_Number)intV(o)), n);
+  else
+    return NULL;
+}
+
+/* The handler of a binary event when the left operand has none: the right
+** operand's, unless that is an NL method (a handler written in Lua keeps
+** Lua's fallback; a method expects its own type as
+** self). When the left operand is a number, string or boolean and the
+** right operand's type has `coerce` but no handler for the event, the
+** runtime's generic handler of the event runs: it asks coerce and retries
+** the operation on what it returns (runtime/nl_40_ops.lua). Returns nil
+** when there is nothing to call.
+*/
+cTValue *lj_nl_rightmm(lua_State *L, cTValue *rb, cTValue *rc, MMS mm)
+{
+  cTValue *mo = lj_meta_lookup(L, rc, mm);
+  if (!tvisnil(mo)) {
+    if (tvisfunc(mo) && (funcV(mo)->c.nlflags & NLFUNC_METHOD))
+      return niltv(L);
+    return mo;
+  }
+  if ((tvisnumber(rb) || tvisstr(rb) || tvisbool(rb)) &&
+      (tvistab(rc) || tvisudata(rc)) &&
+      !tvisnil(lj_meta_lookup(L, rc, MM_coerce))) {
+    cTValue *g = lj_nl_opgeneric(G(L), mm);
+    if (g) return g;
+  }
+  return niltv(L);
+}
+#endif
+
 /* Helper for arithmetic instructions. Coercion, metamethod. */
 TValue *lj_meta_arith(lua_State *L, TValue *ra, cTValue *rb, cTValue *rc,
 		      BCReg op)
@@ -221,19 +277,39 @@ TValue *lj_meta_arith(lua_State *L, TValue *ra, cTValue *rb, cTValue *rc,
   MMS mm = bcmode_mm(op);
   TValue tempb, tempc;
   cTValue *b, *c;
+#if LJ_NL
+  /* NL code does not convert strings to numbers: a string
+  ** operand goes to the operator dispatch, so "5" + 1 can reach String.+.
+  */
+  int nl = lj_nl_curnl(L);
+  if (nl ? ((b = num2num(rb, &tempb)) != NULL &&
+	    (c = num2num(rc, &tempc)) != NULL)
+	 : ((b = str2num(rb, &tempb)) != NULL &&
+	    (c = str2num(rc, &tempc)) != NULL)) {
+#else
   if ((b = str2num(rb, &tempb)) != NULL &&
       (c = str2num(rc, &tempc)) != NULL) {  /* Try coercion first. */
+#endif
     setnumV(ra, lj_vm_foldarith(numV(b), numV(c), (int)mm-MM_add));
     return NULL;
   } else {
     cTValue *mo = lj_meta_lookup(L, rb, mm);
     if (tvisnil(mo)) {
+#if LJ_NL
+      mo = lj_nl_rightmm(L, rb, rc, mm);
+      if (tvisnil(mo)) {
+	if ((nl ? num2num(rb, &tempb) : str2num(rb, &tempb)) == NULL) rc = rb;
+	lj_err_optype(L, rc, LJ_ERR_OPARITH);
+	return NULL;  /* unreachable */
+      }
+#else
       mo = lj_meta_lookup(L, rc, mm);
       if (tvisnil(mo)) {
 	if (str2num(rb, &tempb) == NULL) rc = rb;
 	lj_err_optype(L, rc, LJ_ERR_OPARITH);
 	return NULL;  /* unreachable */
       }
+#endif
     }
     return mmcall(L, lj_cont_ra, mo, rb, rc);
   }
@@ -319,7 +395,11 @@ TValue *lj_meta_cat(lua_State *L, TValue *top, int left)
 	!(tvisstr(top-1) || tvisnumber(top-1) || tvisbuf(top-1))) {
       cTValue *mo = lj_meta_lookup(L, top-1, MM_concat);
       if (tvisnil(mo)) {
+#if LJ_NL
+	mo = lj_nl_rightmm(L, top-1, top, MM_concat);
+#else
 	mo = lj_meta_lookup(L, top, MM_concat);
+#endif
 	if (tvisnil(mo)) {
 	  if (tvisstr(top-1) || tvisnumber(top-1)) top++;
 	  lj_err_optype(L, top-1, LJ_ERR_OPCAT);
@@ -391,7 +471,7 @@ TValue * LJ_FASTCALL lj_meta_len(lua_State *L, cTValue *o)
 {
   cTValue *mo = lj_meta_lookup(L, o, MM_len);
   if (tvisnil(mo)) {
-    if (LJ_52 && tvistab(o))
+    if ((LJ_52 || LJ_NL) && tvistab(o))  /* NL: __len on tables. */
       tabref(tabV(o)->metatable)->nomm |= (uint8_t)(1u<<MM_len);
     else
       lj_err_optype(L, o, LJ_ERR_OPLEN);
@@ -408,7 +488,11 @@ TValue *lj_meta_equal(lua_State *L, GCobj *o1, GCobj *o2, int ne)
   if (mo) {
     TValue *top;
     uint32_t it;
-    if (tabref(o1->gch.metatable) != tabref(o2->gch.metatable)) {
+    /* NL code consults the left operand's __eq alone;
+    ** Lua code keeps Lua's same-handler rule.
+    */
+    if ((LJ_NL && lj_nl_curnl(L)) == 0 &&
+	tabref(o1->gch.metatable) != tabref(o2->gch.metatable)) {
       cTValue *mo2 = lj_meta_fast(L, tabref(o2->gch.metatable), MM_eq);
       if (mo2 == NULL || !lj_obj_equal(mo, mo2))
 	return (TValue *)(intptr_t)ne;
@@ -458,14 +542,38 @@ TValue * LJ_FASTCALL lj_meta_equal_cd(lua_State *L, BCIns ins)
 /* Helper for ordered comparisons. String compare, __lt/__le metamethods. */
 TValue *lj_meta_comp(lua_State *L, cTValue *o1, cTValue *o2, int op)
 {
+#if LJ_NL
+  if (op >= BC_CMPGT) {
+    /* CMPGT/CMPNGT/CMPGE/CMPNGE: o1 > o2 or o1 >= o2.
+    ** Two strings compare; otherwise __gt/__ge of the left operand, and
+    ** without one the swapped __lt/__le. Numbers never get here.
+    */
+    int ne = op & 1;
+    MMS mm = op >= BC_CMPGE ? MM_ge : MM_gt;
+    if (tvisstr(o1) && tvisstr(o2)) {
+      int32_t res = lj_str_cmp(strV(o1), strV(o2));
+      return (TValue *)(intptr_t)((mm == MM_ge ? res >= 0 : res > 0) ^ ne);
+    }
+    if (!(LJ_HASFFI && (tviscdata(o1) || tviscdata(o2)))) {
+      cTValue *mo = lj_meta_lookup(L, o1, mm);
+      if (!tvisnil(mo))
+	return mmcall(L, ne ? lj_cont_condf : lj_cont_condt, mo, o1, o2);
+    }
+    { cTValue *ot = o1; o1 = o2; o2 = ot; }  /* o2 < o1, o2 <= o1. */
+    op = (mm == MM_ge ? BC_ISLE : BC_ISLT) | ne;
+  }
+#endif
   if (LJ_HASFFI && (tviscdata(o1) || tviscdata(o2))) {
     ASMFunction cont = (op & 1) ? lj_cont_condf : lj_cont_condt;
     MMS mm = (op & 2) ? MM_le : MM_lt;
     cTValue *mo = lj_meta_lookup(L, tviscdata(o1) ? o1 : o2, mm);
     if (LJ_UNLIKELY(tvisnil(mo))) goto err;
     return mmcall(L, cont, mo, o1, o2);
-  } else if (LJ_52 || itype(o1) == itype(o2)) {
-    /* Never called with two numbers. */
+  } else if (LJ_52 || LJ_NL || itype(o1) == itype(o2)) {
+    /* Never called with two numbers. NL: __lt and __le accept operands
+    ** of different types, and the left operand is asked first, then the
+    ** right one, as in Lua 5.2.
+    */
     if (tvisstr(o1) && tvisstr(o2)) {
       int32_t res = lj_str_cmp(strV(o1), strV(o2));
       return (TValue *)(intptr_t)(((op&2) ? res <= 0 : res < 0) ^ (op&1));
@@ -475,7 +583,9 @@ TValue *lj_meta_comp(lua_State *L, cTValue *o1, cTValue *o2, int op)
 	ASMFunction cont = (op & 1) ? lj_cont_condf : lj_cont_condt;
 	MMS mm = (op & 2) ? MM_le : MM_lt;
 	cTValue *mo = lj_meta_lookup(L, o1, mm);
-#if LJ_52
+#if LJ_NL
+	if (tvisnil(mo) && tvisnil((mo = lj_nl_rightmm(L, o1, o2, mm))))
+#elif LJ_52
 	if (tvisnil(mo) && tvisnil((mo = lj_meta_lookup(L, o2, mm))))
 #else
 	cTValue *mo2 = lj_meta_lookup(L, o2, mm);

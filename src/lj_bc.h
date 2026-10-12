@@ -195,6 +195,11 @@
   _(BSHR,	dst,	var,	var,	___) \
   _(BSAR,	dst,	var,	var,	___) \
   \
+  /* NL extensions. Before the function headers, which are regenerated at
+  ** load and never serialized, so every stock opcode keeps its number. A
+  ** dump that uses them carries BCDUMP_F_NL (lj_bcdump.h). */ \
+  BCDEF_NL(_) \
+  \
   /* Function headers. I/J = interp/JIT, F/V/C = fixarg/vararg/C func. */ \
   _(FUNCF,	rbase,	___,	___,	___) \
   _(IFUNCF,	rbase,	___,	___,	___) \
@@ -204,6 +209,39 @@
   _(JFUNCV,	rbase,	___,	lit,	___) \
   _(FUNCC,	rbase,	___,	___,	___) \
   _(FUNCCW,	rbase,	___,	___,	___)
+
+#if LJ_NL
+/*
+** KINTR A D	slot A = entry D of the state's intrinsic table (lj_nlint.h):
+**		a function or table of the NL runtime, fixed when the nl
+**		library opens, so the JIT treats it as a constant.
+** ISMETH A D	followed by a JMP, as IST/ISF. The JMP is taken when the
+**		value in slot A is NOT to be called as a method of the
+**		receiver in slot D (lj_nl_ismethod); execution falls through
+**		into the auto-call when it is.
+** MSELF A B C	before CALLM/CALLMT at the same base A. C fixed arguments,
+**		the receiver first, follow the frame slot; B != 0: MULTRES
+**		more follow them. The callee in slot A passing the method
+**		test against the receiver: MULTRES = the argument count.
+**		Otherwise: the arguments are shifted down one slot over the
+**		receiver and MULTRES = that count minus one.
+** CMPGT A D	A > D under NL's rules: for two numbers or two strings the
+** CMPGE A D	swapped ISLT/ISLE; otherwise __gt/__ge of A, and without one
+**		the swapped __lt/__le (lj_meta_comp). The JMP is taken when
+**		the comparison holds. CMPNGT/CMPNGE (op^1) take it when it
+**		does not, as ISGE is to ISLT: unordered numbers take it.
+*/
+#define BCDEF_NL(_) \
+  _(CMPGT,	var,	___,	var,	gt) \
+  _(CMPNGT,	var,	___,	var,	gt) \
+  _(CMPGE,	var,	___,	var,	ge) \
+  _(CMPNGE,	var,	___,	var,	ge) \
+  _(KINTR,	dst,	___,	lit,	___) \
+  _(ISMETH,	var,	___,	var,	___) \
+  _(MSELF,	rbase,	lit,	lit,	___)
+#else
+#define BCDEF_NL(_)
+#endif
 
 /* Bytecode opcode numbers. */
 typedef enum {
@@ -235,6 +273,11 @@ LJ_STATIC_ASSERT((int)BC_FUNCF + 1 == (int)BC_IFUNCF);
 LJ_STATIC_ASSERT((int)BC_FUNCF + 2 == (int)BC_JFUNCF);
 LJ_STATIC_ASSERT((int)BC_FUNCV + 1 == (int)BC_IFUNCV);
 LJ_STATIC_ASSERT((int)BC_FUNCV + 2 == (int)BC_JFUNCV);
+#if LJ_NL
+LJ_STATIC_ASSERT(((int)BC_CMPGT^1) == (int)BC_CMPNGT);
+LJ_STATIC_ASSERT(((int)BC_CMPGE^1) == (int)BC_CMPNGE);
+LJ_STATIC_ASSERT((int)BC_CMPGT + 2 == (int)BC_CMPGE);
+#endif
 
 /* This solves a circular dependency problem, change as needed. */
 #define FF_next_N	4
@@ -273,7 +316,10 @@ static LJ_AINLINE int bc_isret_or_tail(BCOp op)
   return (op == BC_CALLMT || op == BC_CALLT || bc_isret(op));
 }
 
-LJ_DATA const uint16_t lj_bc_mode[];
+/* 32 bits: the metamethod index in bits 11 and up outgrows 5 bits with
+** NL's events (lj_obj.h, MMDEF_NL).
+*/
+LJ_DATA const uint32_t lj_bc_mode[];
 LJ_DATA const uint16_t lj_bc_ofs[];
 
 #endif

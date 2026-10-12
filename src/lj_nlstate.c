@@ -195,6 +195,8 @@ int lj_nl_newstate(global_State *g)
     return -1;
   }
   ns->rtref = LUA_NOREF;
+  ns->intrref = LUA_NOREF;
+  setmref(g->nl_intr, NULL);
   ns->trampref = LUA_NOREF;
   ns->guardref = LUA_NOREF;
   ns->opt[NL_OPT_CHECKS] = 1;

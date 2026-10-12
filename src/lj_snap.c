@@ -1015,6 +1015,15 @@ const BCIns *lj_snap_restore(jit_State *J, void *exptr)
 
   /* Compute current stack top. */
   switch (bc_op(*pc)) {
+#if LJ_NL
+  case BC_MSELF:
+    if (bc_b(*pc)) {  /* MULTRES arguments follow the fixed ones. */
+      L->top = frame + snap->nslots;
+      break;
+    }
+    L->top = curr_topL(L);
+    break;
+#endif
   default:
     if (bc_op(*pc) < BC_FUNCF) {
       L->top = curr_topL(L);

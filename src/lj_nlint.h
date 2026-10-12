@@ -53,6 +53,7 @@ typedef struct NLState {
   int wakeup_calls;		/* Wakeup calls in progress. */
   /* -- Owner thread only. -- */
   int rtref;			/* Registry reference of rt, or LUA_NOREF. */
+  int intrref;			/* Registry reference of the intrinsic table (lj_nl.h). */
   int trampref;			/* Registry reference of the trampoline. */
   int guardref;			/* Registry reference of the guard metatable. */
   NLProt *prot;			/* The call the trampoline is to make. */
@@ -87,6 +88,10 @@ LJ_FUNCA void lj_nl_report(lua_State *L);
 LJ_FUNCA int lj_nl_absindex(lua_State *L, int idx);
 LJ_FUNCA void lj_nl_inittrampoline(lua_State *L);
 LJ_FUNCA int lj_nl_pumprt(lua_State *L);
+
+/* lj_nlvm.c: the C side of the VM extensions. */
+LJ_FUNCA void lj_nl_openintr(lua_State *L);
+LJ_FUNCA void lj_nl_pushhostvm(lua_State *L);
 
 /* lj_nlload.c */
 LJ_FUNCA void lj_nl_openhost(lua_State *L);

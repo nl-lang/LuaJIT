@@ -14,8 +14,43 @@
 #define _LJ_NL_H
 
 #include "lj_obj.h"
+#include "lj_frame.h"
 
 #if LJ_NL
+
+#include "nlc.h"
+
+/* -- VM extensions ------------------------------------------------------- */
+
+/* The intrinsic table (nlc.h, NLC_INTRINSICS): KINTR reads it from
+** g->nl_intr, the array part of a table that luaopen_nl fills and anchors
+** in the registry. Index 0 is unused.
+*/
+enum {
+  NLINTR__0,
+#define NLINTR_ENUM(name)	NLINTR_##name,
+  NLC_INTRINSICS(NLINTR_ENUM)
+#undef NLINTR_ENUM
+  NLINTR__MAX
+};
+#define lj_nl_intr(g, i)	(&mref((g)->nl_intr, TValue)[(i)])
+#define lj_nl_hasintr(g)	(mref((g)->nl_intr, TValue) != NULL)
+#define lj_nl_strlib(g)		tabV(lj_nl_intr((g), NLINTR_String))
+
+/* Whether the running function was compiled from NL (PROTO_NL). Only for
+** the slow paths the interpreter calls with a Lua frame on top; a C frame
+** (the C API) gets Lua's rules.
+*/
+static LJ_AINLINE int lj_nl_curnl(lua_State *L)
+{
+  GCfunc *fn = curr_func(L);
+  return isluafunc(fn) && (funcproto(fn)->nlflags & PROTO_NL);
+}
+
+/* lj_nlvm.c */
+LJ_FUNCA int lj_nl_ismethod(global_State *g, cTValue *f, cTValue *recv);
+LJ_FUNCA int lj_nl_ismethod_ud(global_State *g, GCudata *ud);
+LJ_FUNCA cTValue *lj_nl_opgeneric(global_State *g, MMS mm);
 
 /* Functions here use LJ_FUNCA, not LJ_FUNC: the files that call them may be
 ** compiled into ljamalg.c, where LJ_FUNC means static, while the NL files are

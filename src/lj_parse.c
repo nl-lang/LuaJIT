@@ -1721,6 +1721,7 @@ static GCproto *fs_finish(LexState *ls, BCLine line)
   pt->sizept = (MSize)sizept;
   pt->trace = 0;
   pt->flags = (uint8_t)(fs->flags & ~(PROTO_HAS_RETURN|PROTO_FIXUP_RETURN));
+  pt->nlflags = 0;  /* Lua source: no NL flags. */
   pt->numparams = fs->numparams;
   pt->framesize = fs->framesize;
   setgcref(pt->chunkname, obj2gco(ls->chunkname));

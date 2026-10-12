@@ -195,6 +195,7 @@ IRFPMDEF(FPMENUM)
   _(FUNC_ENV,	offsetof(GCfunc, l.env)) \
   _(FUNC_PC,	offsetof(GCfunc, l.pc)) \
   _(FUNC_FFID,	offsetof(GCfunc, l.ffid)) \
+  _(FUNC_NLFLAGS, offsetof(GCfunc, l.nlflags)) \
   _(THREAD_ENV,	offsetof(lua_State, env)) \
   _(TAB_META,	offsetof(GCtab, metatable)) \
   _(TAB_ARRAY,	offsetof(GCtab, array)) \
