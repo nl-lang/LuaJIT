@@ -39,11 +39,13 @@ LUA_API void NL_VERSION_SYM(void);
 #define NL_OPT_MAXWORKERS	3	/* Dedicated workers; default 64. */
 #define NL_OPT_WORKERMEM	4	/* Bytes per worker, 0 = no limit. */
 #define NL_OPT_GLUA		5	/* Accept GLua (Garry's Mod) syntax; default 0. */
+#define NL_OPT_SANDBOX		6	/* Sandbox profile for untrusted mods; default 0. */
 
 LUALIB_API int luaopen_nl(lua_State *L);			/* [-0, +0, e] */
 LUA_API int nl_setoption(lua_State *L, int opt, lua_Integer value); /* [-0, +0, -] */
 LUA_API lua_Integer nl_getoption(lua_State *L, int opt);	/* [-0, +0, -] */
 LUA_API int nl_isworker(lua_State *L);				/* [-0, +0, -] */
+LUA_API void nl_sandboxenv(lua_State *L);			/* [-0, +1, m] */
 
 /* -- Loading (API.md 2.3) ------------------------------------------------ */
 

@@ -9,6 +9,9 @@
 ** - luaL_loadbuffer(x), luaL_loadstring, lua_load, load and loadstring always
 **   take Lua source or bytecode.
 ** - nl_loadfile and nl_loadbuffer always take NL source.
+** In the sandbox (NL_OPT_SANDBOX, lj_nlsandbox.c) the NL entry points and
+** the sandbox's own load functions take no bytecode chunk; the host's own
+** luaL_load* calls are unaffected.
 */
 
 #define lj_nlload_c
@@ -467,6 +470,15 @@ static int host_compile(lua_State *L)
   Guard *g;
   char **decls;
   size_t ndecls;
+  /* The sandbox takes source text only (NL_OPT_SANDBOX): a chunk that
+  ** starts with the bytecode signature is refused before it reaches the
+  ** compiler, whatever the entry point (nl_loadbuffer, import, load_nl).
+  */
+  if (len > 0 && src[0] == LUA_SIGNATURE[0] && lj_nl_sandboxed(L)) {
+    lua_pushnil(L);
+    lua_pushliteral(L, NL_SANDBOX_NOBC);
+    return 2;
+  }
   opt.checks = (int)ns->opt[NL_OPT_CHECKS];
   opt.strip = (int)ns->opt[NL_OPT_STRIP];
   opt.bytecode = 1;  /* The VM loads dumps (nlc.h); loadstring takes both. */
@@ -583,7 +595,7 @@ static int host_addpath(lua_State *L)
 
 void lj_nl_openhost(lua_State *L)
 {
-  lua_createtable(L, 0, 4);
+  lua_createtable(L, 0, 12);
   lua_pushcfunction(L, host_compile);
   lua_setfield(L, -2, "compile");
   lua_pushcfunction(L, host_resolve);
@@ -594,6 +606,11 @@ void lj_nl_openhost(lua_State *L)
   lua_setfield(L, -2, "add_path");
   lua_pushcfunction(L, host_canonical);
   lua_setfield(L, -2, "canonical");
+  /* The sandbox profile (lj_nlsandbox.c). */
+  lua_pushcfunction(L, lj_nl_hostsandbox);
+  lua_setfield(L, -2, "sandbox");
+  lua_pushcfunction(L, lj_nl_hostloadfile);
+  lua_setfield(L, -2, "loadfile");
   /* The VM extensions (M5): host.vm.markmethod, host.vm.ismethod. */
   lj_nl_pushhostvm(L);
   lua_setfield(L, -2, "vm");
