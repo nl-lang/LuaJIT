@@ -851,6 +851,7 @@ LJNL_DEP= lj_nlint.h lj_nl.h lj_obj.h lj_def.h lj_arch.h lua.h luaconf.h \
 	  lauxlib.h nl.h nlc.h
 lj_nlstate.o lj_nlapi.o lj_nlload.o lj_nlsandbox.o lib_nl.o: $(LJNL_DEP) lj_err.h \
   lj_errmsg.h
+lj_nlvm.o: $(LJNL_DEP) lj_err.h lj_gc.h lj_str.h lj_tab.h lj_meta.h lj_jit.h lj_trace.h
 lj_nlload.o: nltext.h nlregex.h
 lib_nltext.o: lib_nltext.c $(LJNL_DEP) lj_str.h nltext.h
 lib_regex.o: lib_regex.c $(LJNL_DEP) lj_gc.h nlregex.h
