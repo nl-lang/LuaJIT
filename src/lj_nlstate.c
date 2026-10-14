@@ -207,6 +207,7 @@ int lj_nl_newstate(global_State *g)
   ns->opt[NL_OPT_WORKERMEM] = 0;
   ns->opt[NL_OPT_GLUA] = 0;
   ns->opt[NL_OPT_SANDBOX] = 0;
+  ns->opt[NL_OPT_LOCALIZE] = 1;
   g->nl = ns;
   if (!path_init(ns)) return -1;  /* lj_nl_freestate cleans up. */
   return 0;
@@ -370,6 +371,9 @@ LUA_API int nl_setoption(lua_State *L, int opt, lua_Integer value)
     ** is final.
     */
     if (value == 1 && ns->opt[opt] == 0) ns->declnpath = ns->npath;
+    break;
+  case NL_OPT_LOCALIZE:
+    if (value < 0 || value > 2) return 0;
     break;
   case NL_OPT_MAXWORKERS: case NL_OPT_WORKERMEM:
     /* Stored for nl_getoption. Workers do not exist before M10. */
