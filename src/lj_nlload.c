@@ -484,6 +484,7 @@ static int host_compile(lua_State *L)
   }
   opt.checks = (int)ns->opt[NL_OPT_CHECKS];
   opt.strip = (int)ns->opt[NL_OPT_STRIP];
+  opt.localize = (int)ns->opt[NL_OPT_LOCALIZE];
   opt.bytecode = 1;  /* The VM loads dumps (nlc.h); loadstring takes both. */
   opt.level = 1;     /* The fork's opcodes and events (IMPLEMENTATION_PLAN M5). */
   current_loader(ns, &ld);

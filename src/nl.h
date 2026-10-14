@@ -40,6 +40,7 @@ LUA_API void NL_VERSION_SYM(void);
 #define NL_OPT_WORKERMEM	4	/* Bytes per worker, 0 = no limit. */
 #define NL_OPT_GLUA		5	/* Accept GLua (Garry's Mod) syntax; default 0. */
 #define NL_OPT_SANDBOX		6	/* Sandbox profile for untrusted mods; default 0. */
+#define NL_OPT_LOCALIZE		7	/* Localized Lua paths: 0, 1 std, 2 all; default 1. */
 
 LUALIB_API int luaopen_nl(lua_State *L);			/* [-0, +0, e] */
 LUA_API int nl_setoption(lua_State *L, int opt, lua_Integer value); /* [-0, +0, -] */

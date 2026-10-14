@@ -59,6 +59,10 @@ typedef struct nlc_Options {
   ** A name that cannot be read is an error of the compile. */
   const char *const *decls;
   size_t ndecls;
+  /* NL_OPT_LOCALIZE: which Lua paths are read once, when the chunk loads,
+  ** into hidden locals (DESIGN 12): 0 none, 1 the standard libraries, 2
+  ** every Lua global. */
+  int localize;
 } nlc_Options;
 
 #define NLC_DIAG_ERROR		0
