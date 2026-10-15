@@ -32,6 +32,15 @@ typedef struct NLPost {
 
 #define NL_OPT__MAX	7
 
+/* lj_nltransfer.c and lj_nlworker.c (IMPLEMENTATION_PLAN M10). */
+typedef struct NLMsg NLMsg;		/* An encoded message (lj_nltransfer.c). */
+
+/* The kinds of the refs of a message (lj_nltransfer.c). */
+#define NLT_REF_NAMED	1	/* A named function or struct: file, name. */
+#define NLT_REF_BUILTIN	2	/* A built-in type of the runtime: name. */
+#define NLT_REF_META	3	/* A metatable of Worker.register: name. */
+#define NLT_REF_HOST	4	/* A host type's decode function: name. */
+
 /* A pending protected call (lj_nl_protect). */
 typedef int (*NLProtF)(lua_State *L, void *ud);
 typedef struct NLProt {
@@ -71,6 +80,8 @@ typedef struct NLState {
 				** in the sandbox: those added before it. */
   char **decl;			/* Declaration files of nl_adddecl (API.md 2.3). */
   size_t ndecl, szdecl;
+  int wctxref;			/* Registry reference of the transfer context
+				** (lj_nltransfer.c), or LUA_NOREF. */
 } NLState;
 
 #define nl_state(L)	((NLState *)G(L)->nl)
@@ -104,6 +115,12 @@ LJ_FUNCA void lj_nl_pushhostvm(lua_State *L);
 #define lj_nl_sandboxed(L)	(nl_state(L)->opt[NL_OPT_SANDBOX] != 0)
 LJ_FUNCA int lj_nl_hostsandbox(lua_State *L);
 LJ_FUNCA int lj_nl_hostloadfile(lua_State *L);
+
+/* lj_nltransfer.c */
+LJ_FUNCA NLMsg *lj_nl_encode(lua_State *L, int base, int n, int labidx);
+LJ_FUNCA int lj_nl_decode(lua_State *L, const NLMsg *m);
+LJ_FUNCA void lj_nl_msgfree(NLMsg *m);
+LJ_FUNCA size_t lj_nl_msgsize(const NLMsg *m);
 
 /* lj_nlload.c */
 LJ_FUNCA void lj_nl_openhost(lua_State *L);

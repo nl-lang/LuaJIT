@@ -201,6 +201,7 @@ int lj_nl_newstate(global_State *g)
   ns->guardref = LUA_NOREF;
   ns->sandboxref = LUA_NOREF;
   ns->sandboxpkgref = LUA_NOREF;
+  ns->wctxref = LUA_NOREF;
   ns->opt[NL_OPT_CHECKS] = 1;
   ns->opt[NL_OPT_STRIP] = 0;
   ns->opt[NL_OPT_MAXWORKERS] = 64;
