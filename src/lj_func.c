@@ -168,6 +168,36 @@ GCfunc *lj_func_newL_gc(lua_State *L, GCproto *pt, GCfuncL *parent)
   MSize i, nuv;
   TValue *base;
   lj_gc_check_fixtop(L);
+#if LJ_NL
+  {
+    /* The upvalues first, then the closure: making an upvalue can run out
+    ** of memory, and a closure made before it would be freed with the size
+    ** of one without upvalues (nupvalues is still 0), so that the
+    ** collector's count of bytes no longer matches what was allocated. The
+    ** new open upvalues are in L->openupval, alive, until then.
+    */
+    GCupval *uvs[LJ_MAX_UPVAL];
+    puv = parent->uvptr;
+    nuv = pt->sizeuv;
+    base = L->base;
+    lj_assertL(nuv <= LJ_MAX_UPVAL, "too many upvalues");
+    for (i = 0; i < nuv; i++) {
+      uint32_t v = proto_uv(pt)[i];
+      GCupval *uv;
+      if ((v & PROTO_UV_LOCAL)) {
+	uv = func_finduv(L, base + (v & 0xff));
+	uv->immutable = ((v / PROTO_UV_IMMUTABLE) & 1);
+	uv->dhash = (uint32_t)(uintptr_t)mref(parent->pc, char) ^ (v << 24);
+      } else {
+	uv = &gcref(puv[v])->uv;
+      }
+      uvs[i] = uv;
+    }
+    fn = func_newL(L, pt, tabref(parent->env));
+    /* NOBARRIER: The GCfunc is new (marked white). */
+    for (i = 0; i < nuv; i++) setgcref(fn->l.uvptr[i], obj2gco(uvs[i]));
+  }
+#else
   fn = func_newL(L, pt, tabref(parent->env));
   /* NOBARRIER: The GCfunc is new (marked white). */
   puv = parent->uvptr;
@@ -185,6 +215,7 @@ GCfunc *lj_func_newL_gc(lua_State *L, GCproto *pt, GCfuncL *parent)
     }
     setgcref(fn->l.uvptr[i], obj2gco(uv));
   }
+#endif
   fn->l.nupvalues = (uint8_t)nuv;
   return fn;
 }
