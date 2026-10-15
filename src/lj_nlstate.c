@@ -59,7 +59,7 @@ static int sync_init(NLState *ns)
     pthread_mutex_destroy(&ns->mtx);
     return -1;
   }
-  if (pthread_cond_init(&ns->posted, NULL) != 0) {
+  if (lj_nl_condinit(&ns->posted) != 0) {  /* Timed waits: nl_drain. */
     pthread_cond_destroy(&ns->idle);
     pthread_mutex_destroy(&ns->mtx);
     return -1;
@@ -384,6 +384,11 @@ LUA_API int nl_setoption(lua_State *L, int opt, lua_Integer value)
   ** setting one there has no effect.
   */
   if (ns->worker) return 0;
+  /* Once workers exist their settings are fixed, and so are the options,
+  ** which they copied: only the sandbox, which is one way and
+  ** reaches every worker, can still be turned on.
+  */
+  if (opt != NL_OPT_SANDBOX && lj_nl_workersfrozen(ns)) return 0;
   switch (opt) {
   case NL_OPT_CHECKS: case NL_OPT_STRIP: case NL_OPT_GLUA:
     if (value != 0 && value != 1) return 0;
@@ -401,6 +406,10 @@ LUA_API int nl_setoption(lua_State *L, int opt, lua_Integer value)
     ** is final.
     */
     if (value == 1 && ns->opt[opt] == 0) ns->declnpath = ns->npath;
+    /* Every worker applies it before it loads anything more
+    ** (lj_nlworker.c), the running ones included.
+    */
+    if (value == 1) lj_nl_workerssandbox(ns);
     break;
   case NL_OPT_LOCALIZE:
     if (value < 0 || value > 2) return 0;
@@ -434,7 +443,8 @@ int lj_nl_glua(lua_State *L)
 LUA_API void nl_setloader(lua_State *L, const nl_Loader *loader)
 {
   NLState *ns = nl_state(L);
-  if (ns->worker) return;  /* No effect in a worker. */
+  /* No effect in a worker, nor once workers exist. */
+  if (ns->worker || lj_nl_workersfrozen(ns)) return;
   if (loader && loader->resolve && loader->read) {
     ns->loader = *loader;
     ns->hasloader = 1;

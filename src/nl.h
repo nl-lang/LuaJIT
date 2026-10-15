@@ -211,9 +211,8 @@ typedef void (*nl_Wakeup)(void *data);
 LUA_API void nl_setwakeup(lua_State *L, nl_Wakeup fn, void *data); /* [-0, +0, -] */
 
 /* The number of pool workers; 0 runs jobs and dedicated workers on the
-** caller's thread while it pumps. Set before the first spawn; afterwards a
-** pool with threads can only grow. The default is the hardware threads
-** minus one, at least one.
+** caller's thread while it pumps. The default is the hardware threads minus
+** one, at least one. Set before the first worker starts (below).
 */
 LUA_API void nl_setworkers(lua_State *L, int n);		/* [-0, +0, -] */
 /* fn runs in every new worker state W as lua_cpcall(W, fn, data) does, on
@@ -232,12 +231,16 @@ LUA_API void nl_settransfer(lua_State *L, const char *type);	/* [-2, +0, e] */
 */
 LUA_API void nl_spawn(lua_State *L, int nargs);	/* [-(nargs+1), +1, e] */
 
-/* nl_setworkers, nl_setworkerinit, nl_setloader, nl_setreporter and the
-** options are set on the main state, before the first spawn; they have no
-** effect in a worker. A worker copies the options, the loader, the search
-** path and the declaration files when it starts, but not the reporter. The
-** loader's functions are then called from worker threads too, so they must
-** be safe to call from several threads at once.
+/* nl_setworkers, nl_setworkerinit, nl_setloader, nl_addpath, nl_adddecl and
+** the options are set on the main state, before the first worker starts (a
+** spawn, Worker.new, nl_spawn). From then on the workers' settings are fixed:
+** nl_setoption returns 0, except that NL_OPT_SANDBOX can still be turned on,
+** and every worker applies it before it loads anything more; the others
+** have no effect. In a worker none of them has an effect. A worker copies
+** the options, the loader, the search path and the declaration files when
+** it starts, but not the reporter. The loader's functions are then called
+** from worker threads too, so they must be safe to call from several
+** threads at once.
 */
 
 #ifdef __cplusplus
