@@ -183,15 +183,21 @@ typedef void (*nl_Timer)(void *data, lua_State *L, double seconds,
 LUA_API void nl_settimer(lua_State *L, nl_Timer fn, void *data); /* [-0, +0, -] */
 LUA_API void nl_setunhandled(lua_State *L);			/* [-1, +0, -] */
 
-/* -- Threads (API.md 2.10) ----------------------------------------------- */
+/* -- Threads and workers (API.md 2.10) ------------------------------------ */
 
-/* nl_pump runs the callbacks posted so far, each in a protected call, then
-** what the runtime library has queued (results of the spawn stand-in,
-** reports of unhandled failures). It returns the number of posted callbacks
-** run, plus 1 when the runtime delivered anything. A callback must not call
-** lua_close.
+/* nl_pump runs the callbacks posted so far, each in a protected call (job
+** results and events from workers arrive this way), then, with no worker
+** threads (nl_setworkers(L, 0)), a step of each worker on this thread, then
+** what the runtime library has queued (reports of unhandled failures). It
+** returns the number of posted callbacks run, plus 1 when the workers or
+** the runtime did anything. A callback must not call lua_close.
 */
 LUA_API int nl_pump(lua_State *L);				/* [-0, +0, -] */
+/* Pumps, waiting, until every job and call started by L has been delivered.
+** Returns the number nl_pump would have. With no worker threads it returns
+** when nothing can move any more without a host timer or another thread.
+*/
+LUA_API int nl_drain(lua_State *L);				/* [-0, +0, -] */
 /* Callable from any thread. Pass the main state (or any thread of it that
 ** stays alive): another thread uses L only to find the state's inbox.
 */
@@ -204,6 +210,36 @@ typedef void (*nl_Wakeup)(void *data);
 ** state, and must not call nl_setwakeup.
 */
 LUA_API void nl_setwakeup(lua_State *L, nl_Wakeup fn, void *data); /* [-0, +0, -] */
+
+/* The number of pool workers; 0 runs jobs and dedicated workers on the
+** caller's thread while it pumps. Set before the first spawn; afterwards a
+** pool with threads can only grow. The default is the hardware threads
+** minus one, at least one.
+*/
+LUA_API void nl_setworkers(lua_State *L, int n);		/* [-0, +0, -] */
+/* fn runs in every new worker state W as lua_cpcall(W, fn, data) does, on
+** the worker's thread, before any NL file loads. An error fails the worker
+** with WorkerError. data is shared by all workers.
+*/
+LUA_API void nl_setworkerinit(lua_State *L, lua_CFunction fn,
+			      void *data);			/* [-0, +0, -] */
+/* Pops encode (below) and decode (on top): userdata of the host type `type`
+** cross between states as encode(ud) in the sender, decode(value) in the
+** receiver. Every state registers the pair under the same name.
+*/
+LUA_API void nl_settransfer(lua_State *L, const char *type);	/* [-2, +0, e] */
+/* Worker.run(f, args...): the function and nargs arguments on top; pushes
+** the Task. Raises SendError as spawn does.
+*/
+LUA_API void nl_spawn(lua_State *L, int nargs);	/* [-(nargs+1), +1, e] */
+
+/* nl_setworkers, nl_setworkerinit, nl_setloader, nl_setreporter and the
+** options are set on the main state, before the first spawn; they have no
+** effect in a worker. A worker copies the options, the loader, the search
+** path and the declaration files when it starts, but not the reporter. The
+** loader's functions are then called from worker threads too, so they must
+** be safe to call from several threads at once.
+*/
 
 #ifdef __cplusplus
 }

@@ -549,7 +549,7 @@ LJCORE_O= lj_assert.o lj_gc.o lj_err.o lj_char.o lj_bc.o lj_obj.o lj_buf.o \
 	  $(LJLIB_O) lib_init.o
 
 LJNL_O= lj_nlstate.o lj_nlapi.o lj_nlvm.o lj_nlload.o lj_nlsandbox.o lib_nl.o \
-	lib_event.o lib_nltext.o lib_regex.o lj_nltransfer.o
+	lib_event.o lib_nltext.o lib_regex.o lj_nlworker.o lj_nltransfer.o
 LJNLRT_O= lj_nlrt.o
 
 LJVMCORE_O= $(LJVM_O) $(LJCORE_O) $(LJNL_O) $(LJNLRT_O)
@@ -849,8 +849,8 @@ include Makefile.dep
 # NL objects (not in Makefile.dep, so that "make depend" stays upstream's).
 LJNL_DEP= lj_nlint.h lj_nl.h lj_obj.h lj_def.h lj_arch.h lua.h luaconf.h \
 	  lauxlib.h nl.h nlc.h
-lj_nlstate.o lj_nlapi.o lj_nlload.o lj_nlsandbox.o lib_nl.o: $(LJNL_DEP) lj_err.h \
-  lj_errmsg.h
+lj_nlstate.o lj_nlapi.o lj_nlload.o lj_nlsandbox.o lib_nl.o lj_nlworker.o: \
+  $(LJNL_DEP) lj_err.h lj_errmsg.h
 lj_nltransfer.o: $(LJNL_DEP) lj_tab.h lj_str.h lj_state.h
 lj_nlvm.o: $(LJNL_DEP) lj_err.h lj_gc.h lj_str.h lj_tab.h lj_meta.h lj_jit.h lj_trace.h
 lj_nlload.o: nltext.h nlregex.h

@@ -34,6 +34,9 @@ typedef struct NLPost {
 
 /* lj_nltransfer.c and lj_nlworker.c (IMPLEMENTATION_PLAN M10). */
 typedef struct NLMsg NLMsg;		/* An encoded message (lj_nltransfer.c). */
+typedef struct NLPort NLPort;		/* Where results for a state go. */
+typedef struct NLWorker NLWorker;	/* A worker state and its thread. */
+typedef struct NLWorkers NLWorkers;	/* The workers of one main state. */
 
 /* The kinds of the refs of a message (lj_nltransfer.c). */
 #define NLT_REF_NAMED	1	/* A named function or struct: file, name. */
@@ -60,6 +63,8 @@ typedef struct NLState {
   nl_Wakeup wakeup;
   void *wakeupdata;
   int wakeup_calls;		/* Wakeup calls in progress. */
+  NLCond posted;		/* Signalled by nl_post while nl_drain waits. */
+  int drain_waiting;		/* nl_drain waits for the inbox. */
   /* -- Owner thread only. -- */
   int rtref;			/* Registry reference of rt, or LUA_NOREF. */
   int intrref;			/* Registry reference of the intrinsic table (lj_nl.h). */
@@ -80,8 +85,14 @@ typedef struct NLState {
 				** in the sandbox: those added before it. */
   char **decl;			/* Declaration files of nl_adddecl (API.md 2.3). */
   size_t ndecl, szdecl;
-  int wctxref;			/* Registry reference of the transfer context
-				** (lj_nltransfer.c), or LUA_NOREF. */
+  /* Workers (lj_nlworker.c). */
+  NLWorkers *wk;		/* The workers of the main state; the same in each
+				** of its workers. NULL until the first is made. */
+  NLWorker *worker;		/* In a worker state: the worker. */
+  NLPort *port;			/* Where results for this state go, once made. */
+  int wctxref;			/* Registry reference of the transfer context. */
+  lua_Integer outstanding;	/* Jobs and calls sent, results not delivered. */
+  int wpumping;			/* nl_pump is stepping the pumped workers. */
 } NLState;
 
 #define nl_state(L)	((NLState *)G(L)->nl)
@@ -121,6 +132,13 @@ LJ_FUNCA NLMsg *lj_nl_encode(lua_State *L, int base, int n, int labidx);
 LJ_FUNCA int lj_nl_decode(lua_State *L, const NLMsg *m);
 LJ_FUNCA void lj_nl_msgfree(NLMsg *m);
 LJ_FUNCA size_t lj_nl_msgsize(const NLMsg *m);
+
+/* lj_nlworker.c */
+LJ_FUNCA void lj_nl_pushhostworker(lua_State *L);
+LJ_FUNCA int lj_nl_stepworkers(lua_State *L);
+LJ_FUNCA void lj_nl_closeworkers(NLState *ns);
+LJ_FUNCA void lj_nl_portkill(NLPort *p);
+LJ_FUNCA void lj_nl_portunref(NLPort *p);
 
 /* lj_nlload.c */
 LJ_FUNCA void lj_nl_openhost(lua_State *L);
