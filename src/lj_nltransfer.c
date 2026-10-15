@@ -3,57 +3,69 @@
 ** one state into a buffer outside every heap, and rebuilds them in another.
 ** Modeled on lj_serialize.c, which it leaves untouched; the format is its own.
 **
-** A message is one malloc'd block (NLMsg):
+** A message is one malloc'd block (NLMsg), written in place by the encoder
+** (no final copy):
 **
-**   "NLT1"
+**   "NLT2", u64 header offset, the values, then the header:
 **   u32 nfiles   then per file:  u32 len, bytes          (canonical names)
 **   u32 nrefs    then per ref:   u8 kind, u32 file, u32 len, bytes
-**   u32 nvalues  then the values
+**   u32 nvalues
 **
-** A ref is something that crosses by name: a named function or a struct
-** (kind NAMED: file and registry name, DESIGN 14.1), a built-in type of the
-** runtime such as Range (BUILTIN), a metatable registered with
-** Worker.register (META), the transfer pair of a host type (HOST; nl_settransfer).
-** The receiver loads every file the header lists that it lacks, as import
-** does, and looks every ref up; then it builds the values without running
-** script code (only the decode function of a host type runs).
+** A ref is something that crosses by name: a named function, struct, enum,
+** module or interface (kind NAMED: file and registry name, DESIGN 14.1), a
+** built-in type of the runtime such as Range (BUILTIN), a metatable
+** registered with Worker.register (META), the transfer pair of a host type
+** (HOST; nl_settransfer). The receiver reads the header first: it loads
+** every file it lists that it lacks, as import does, and looks every ref
+** up; then it builds the values without running script code (only the
+** decode function of a host type runs).
 **
-** Values (one tag byte, then the operands, in native byte order):
+** Values (one tag byte, then the operands, in native byte order: a message
+** never leaves the process):
 **
 **   NIL FALSE TRUE
 **   NUM  f64 (the bits as they are: -0 stays -0, NaN stays NaN)
 **   INT  i32 (an integer slot of a DUALNUM build)
-**   STR  u32 len, bytes        LSTR  u64 len, bytes
-**   TAB  u32 narr, u32 nhash, entries      a table: a new object
+**   STR  u32 len, bytes        a short string
+**   OSTR u32 len, bytes        a long string: an object, so that a string
+**                              sent many times is written once
+**   TAB  u32 narr, u32 nhash, entries      a table: an object
 **   TABMT u32 ref, u32 narr, u32 nhash, entries      with that metatable
 **   REF  u32 ref               the receiver's value of the ref
-**   BACK u32 object            an object of this message seen before
-**   HOST u32 ref, value        a userdata: decode(value) (a new object)
+**   BACK u32 object            an object of this message written before
+**   HOST u32 ref, value        a userdata: decode(value), an object
 **   entries: [ARR u32 n, n values for keys 1..n, nil allowed], then
 **            key value pairs, then END.
 **
-** Objects (tables and host userdata) are numbered in the order their tags
-** appear, from 1, so a table referenced twice arrives as one table and a
-** cycle as a cycle. Between messages there is no identity. The tag of an
-** object that a BACK refers to has TT_KEEP added (the encoder sets it when
-** it writes the BACK), so that the decoder keeps only those objects where
-** a BACK finds them.
+** Objects are numbered in the order their tags appear, from 1, so a table
+** referenced twice arrives as one table and a cycle as a cycle. Between
+** messages there is no identity. The tag of an object that a BACK names has
+** TT_KEEP added (the encoder sets it when it writes the BACK), so that the
+** decoder keeps only those objects where a BACK finds them.
 **
 ** Both sides walk with explicit stacks of their own, never by recursion,
 ** so a structure of any depth or length is copied (or refused) without
-** growing the C stack or Lua's.
+** growing the C stack or Lua's. Both run inside a protected call of their
+** own, so that every error (a SendError, a callback's error, running out of
+** memory) frees the encoder's or decoder's buffers before it goes on. In a
+** worker the encoder's buffer counts toward NL_OPT_WORKERMEM while it is
+** being written.
 **
 ** The rules of what crosses come from the runtime (runtime/nl_64_worker.lua),
 ** through the transfer context: the table at registry[ns->wctxref].
 **
 **   ctx.named        value -> { file, name } (I.named, weak keys)
 **   ctx.other_info   type -> description, for the types that are not structs
-**   ctx.classify(mt, v) -> kind, a, b   what a value with metatable mt is:
+**   ctx.classify(mt, v) -> kind, a, b   what a value with metatable mt is
+**                    (v is the first such value; the answer is kept per
+**                    metatable and per kind of value, table or userdata):
 **                    "named" file name (a struct instance), "builtin" name,
-**                    "meta" name (Worker.register), "host" name encode,
-**                    "type" (v is a struct itself), "bad" message
+**                    "meta" name (Worker.register), "host" name encode
+**                    (userdata only), "type" (v is a struct itself),
+**                    "bad" message
 **   ctx.typevalue(v) -> kind, a, b      the same for a type value v
-**   ctx.fail(code, value, part, keys)   raises SendError; keys are the path
+**   ctx.fail(code, value, part, keys, detail)   raises SendError
+**   ctx.recvfail(code, name, detail)    raises SendError on arrival
 **   ctx.load(file)                      loads a file the receiver lacks
 **   ctx.resolve(kind, file, name) -> value
 */
@@ -64,6 +76,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <stddef.h>
+#include <stdio.h>
 
 #include "lj_nlint.h"
 
@@ -79,16 +93,22 @@
 
 enum {
   TT_NIL, TT_FALSE, TT_TRUE, TT_NUM, TT_INT, TT_STR, TT_TAB, TT_TABMT,
-  TT_REF, TT_BACK, TT_HOST, TT_END, TT_ARR, TT_LSTR
+  TT_REF, TT_BACK, TT_HOST, TT_END, TT_ARR, TT_OSTR
 };
 #define TT_KEEP		0x80	/* Added to the tag of an object a BACK names. */
 
-#define MSG_MAGIC	"NLT1"
+/* Strings this long or longer are objects (TT_OSTR). */
+#define OSTR_MIN	32
+
+#define MSG_MAGIC	"NLT2"
+#define MSG_PREFIX	12	/* The magic and the header's offset. */
 
 struct NLMsg {
-  size_t size;
+  size_t size;		/* Bytes in data. */
   char data[1];
 };
+
+#define MSG_DATA	offsetof(NLMsg, data)
 
 void lj_nl_msgfree(NLMsg *m)
 {
@@ -100,43 +120,20 @@ size_t lj_nl_msgsize(const NLMsg *m)
   return m ? m->size : 0;
 }
 
-/* -- Growable buffers ------------------------------------------------------ */
-
-typedef struct Buf {
-  char *p;
-  size_t n, cap;
-} Buf;
-
-static int buf_grow(Buf *b, size_t more)
-{
-  size_t need = b->n + more, cap = b->cap ? b->cap : 256;
-  char *p;
-  if (need < b->n) return 0;
-  while (cap < need) {
-    if (cap > ((size_t)-1) / 2) return 0;
-    cap *= 2;
-  }
-  p = (char *)realloc(b->p, cap);
-  if (!p) return 0;
-  b->p = p;
-  b->cap = cap;
-  return 1;
-}
-
 /* -- Encoder --------------------------------------------------------------- */
 
 /* A table being written, or a host userdata whose payload is being written. */
 typedef struct EFrame {
   GCtab *t;		/* NULL: a host frame. */
   uint32_t phase;	/* 0: the array run, 1: key 0, 2: the hash part. */
-  uint32_t i;		/* The next array index or node. */
+  uint32_t i;		/* The current array index or node. */
   uint32_t narr;	/* The array run covers keys 1..narr-1. */
   uint32_t sub;		/* Hash part: 0 the key comes next, 1 the value. */
   uint32_t adv;		/* The item at i is written (its own frames may be
 			** open above): move on when the frame is next on top. */
-  uint32_t hostid;	/* Host frame: the object; 0 once the payload is written. */
-  uint32_t hostanchor;	/* Host frame: where the payload is anchored. */
-  uint32_t anchored;	/* The table is anchored (enc_anchorframes). */
+  uint32_t hostid;	/* Host frame: the object. */
+  uint32_t hostanchor;	/* Host frame: where the payload is anchored, or 0
+			** once it is written. */
 } EFrame;
 
 typedef struct ERef {
@@ -145,68 +142,69 @@ typedef struct ERef {
   GCstr *name;
 } ERef;
 
-/* Classification of a metatable, kept for the rest of the message. */
+/* The class of a metatable for tables or for userdata, kept for the rest of
+** the message (a hash table: a message may hold many metatables).
+*/
 typedef struct EClass {
-  GCtab *mt;
+  GCtab *mt;		/* NULL: an empty slot. */
+  int isud;
   int kind;		/* EC_* */
-  uint32_t ref;
-  int encref;		/* Host: the encode function, anchored at this index. */
+  uint32_t ref;		/* The ref; EC_BAD: the anchor of the message. */
+  uint32_t encref;	/* EC_HOST: the anchor of the encode function. */
 } EClass;
 
 enum { EC_NAMED, EC_BUILTIN, EC_META, EC_HOST, EC_TYPE, EC_BAD };
 
-#define ENC_MAGIC	0x4e4c454eu	/* "NLEN" */
-#define NMTCACHE	16
-
 typedef struct Enc {
-  unsigned magic;
-  Buf out;		/* The values. */
+  /* The message being written: an NLMsg header, then MSG_PREFIX bytes,
+  ** then the values; the header of refs is appended at the end.
+  */
+  char *buf;
+  size_t n, cap;
+  size_t charged;	/* Bytes counted toward the worker's memory limit. */
+  NLMsg *result;
   /* The header. */
   GCstr **files;
   uint32_t nfiles, szfiles;
   ERef *refs;
   uint32_t nrefs, szrefs;
-  /* Objects seen: open addressing, pointer -> id. */
+  /* Objects written: pointer -> id (open addressing). */
   uintptr_t *skeys;
   uint32_t *svals;
   uint32_t smask, scount;
   uint32_t nobj;
-  size_t *objat;	/* Where each object's tag is in out (index id-1). */
-  uint32_t szobjat;
+  size_t *objat;	/* Where each object's tag is in buf (index id-1). */
+  TValue *objtv;	/* Each object, for anchoring (index id-1). */
+  uint32_t szobj;
+  uint32_t nanchoredobj;	/* Objects anchored so far (a watermark). */
   /* Host objects whose payload is still being written. */
   uint32_t *hostopen;
   uint32_t nhostopen, szhostopen;
   EFrame *fr;
   uint32_t nfr, szfr;
-  EClass mtc[NMTCACHE];
-  int nmtc;
+  EClass *cls;
+  uint32_t clsmask, ncls;
   /* ctx.named and ctx.other_info, read once (both stay alive in ctx). */
   GCtab *named, *other_info;
   /* Stack indices. */
-  int ctx, anchor;
+  int ctx, anchor, part;
   uint32_t nanchor;
-  const char *part;	/* The label of the value being written. */
-  int partidx;		/* Or its index on the stack (0: use part). */
 } Enc;
 
-static void enc_release(Enc *e)
+static void enc_release(lua_State *L, Enc *e)
 {
-  free(e->out.p); e->out.p = NULL;
+  if (e->charged) lj_nl_memcharge(L, -(ptrdiff_t)e->charged);
+  e->charged = 0;
+  free(e->buf); e->buf = NULL;
   free(e->files); e->files = NULL;
   free(e->refs); e->refs = NULL;
   free(e->skeys); e->skeys = NULL;
   free(e->svals); e->svals = NULL;
+  free(e->objat); e->objat = NULL;
+  free(e->objtv); e->objtv = NULL;
   free(e->hostopen); e->hostopen = NULL;
   free(e->fr); e->fr = NULL;
-  free(e->objat); e->objat = NULL;
-}
-
-static int enc_gc(lua_State *L)
-{
-  Enc *e = (Enc *)lua_touserdata(L, 1);
-  if (e && lua_objlen(L, 1) >= sizeof(Enc) && e->magic == ENC_MAGIC)
-    enc_release(e);
-  return 0;
+  free(e->cls); e->cls = NULL;
 }
 
 static void enc_nomem(lua_State *L)
@@ -214,20 +212,37 @@ static void enc_nomem(lua_State *L)
   luaL_error(L, "not enough memory");
 }
 
+/* Room for `more` bytes in the message. In a worker the growth counts
+** toward its memory limit.
+*/
 static void enc_need(lua_State *L, Enc *e, size_t more)
 {
-  if (e->out.n + more > e->out.cap && !buf_grow(&e->out, more)) enc_nomem(L);
+  size_t need = e->n + more, cap;
+  char *p;
+  if (need <= e->cap) return;
+  if (need < e->n) enc_nomem(L);
+  cap = e->cap ? e->cap : 256;
+  while (cap < need) {
+    if (cap > ((size_t)-1) / 2) enc_nomem(L);
+    cap *= 2;
+  }
+  if (!lj_nl_memcharge(L, (ptrdiff_t)(cap - e->cap))) enc_nomem(L);
+  e->charged += cap - e->cap;
+  p = (char *)realloc(e->buf, cap);
+  if (!p) enc_nomem(L);
+  e->buf = p;
+  e->cap = cap;
 }
 
 static LJ_AINLINE void enc_byte(Enc *e, int b)
 {
-  e->out.p[e->out.n++] = (char)b;
+  e->buf[e->n++] = (char)b;
 }
 
 static LJ_AINLINE void enc_u32(Enc *e, uint32_t v)
 {
-  memcpy(e->out.p + e->out.n, &v, 4);
-  e->out.n += 4;
+  memcpy(e->buf + e->n, &v, 4);
+  e->n += 4;
 }
 
 /* A slot of a growable array: grows *p (of *sz elements) to hold n+1. */
@@ -309,6 +324,10 @@ static uint32_t enc_anchor(lua_State *L, Enc *e)
   return e->nanchor;
 }
 
+/* The names of refs need no anchor: they are held by the runtime's tables
+** (the registry, the classification) for as long as the values in the
+** message, which name them, are alive.
+*/
 static uint32_t file_index(lua_State *L, Enc *e, GCstr *file)
 {
   uint32_t i;
@@ -317,10 +336,6 @@ static uint32_t file_index(lua_State *L, Enc *e, GCstr *file)
     if (e->files[i] == file) return i;
   slot = (GCstr **)enc_slot(L, (void **)&e->files, e->nfiles, &e->szfiles,
 			    sizeof(GCstr *));
-  /* The names of refs need no anchor: they are held by the runtime's tables
-  ** (the registry, the classification) for as long as the values in the
-  ** message, which name them, are alive.
-  */
   *slot = file;
   return e->nfiles++;
 }
@@ -343,19 +358,23 @@ static uint32_t ref_index(lua_State *L, Enc *e, int kind, GCstr *file,
   return e->nrefs++;
 }
 
-/* Raises SendError through ctx.fail(code, value, part, keys): the value at
-** idx, the label of the value being written, and the keys from the outermost
-** table to the one being written. Does not return.
+/* Raises SendError through ctx.fail(code, value, part, keys, detail): the
+** value at idx, the label of the value being written, and the keys from the
+** outermost table to the one being written. detail is the stack index of a
+** detail value, or 0. Does not return; the protected call around the
+** encoder frees its buffers.
 */
-static void enc_fail(lua_State *L, Enc *e, const char *code, int idx)
+static void enc_fail(lua_State *L, Enc *e, const char *code, int idx,
+		     int detail)
 {
   uint32_t k, n = 0;
   idx = lj_nl_absindex(L, idx);
+  if (detail) detail = lj_nl_absindex(L, detail);
   luaL_checkstack(L, 8, "SendError");
   lua_getfield(L, e->ctx, "fail");
   lua_pushstring(L, code);
   lua_pushvalue(L, idx);
-  if (e->partidx) lua_pushvalue(L, e->partidx); else lua_pushstring(L, e->part);
+  lua_pushvalue(L, e->part);
   lua_newtable(L);
   for (k = 0; k < e->nfr; k++) {
     EFrame *f = &e->fr[k];
@@ -373,13 +392,12 @@ static void enc_fail(lua_State *L, Enc *e, const char *code, int idx)
     }
     lua_rawseti(L, -2, (int)++n);
   }
-  lua_call(L, 4, 0);
+  if (detail) lua_pushvalue(L, detail); else lua_pushnil(L);
+  lua_call(L, 5, 0);
   luaL_error(L, "cannot send a value");  /* ctx.fail raises; not reached. */
 }
 
-/* Calls ctx[fname](top value, extra) -> up to 3 results, left on the stack.
-** The value is consumed.
-*/
+/* Calls ctx[fname] with the nargs values on top -> 3 results. */
 static void enc_ask(lua_State *L, Enc *e, const char *fname, int nargs)
 {
   lua_getfield(L, e->ctx, fname);
@@ -387,57 +405,92 @@ static void enc_ask(lua_State *L, Enc *e, const char *fname, int nargs)
   lua_call(L, nargs, 3);
 }
 
-/* The class of metatable mt, found for value v (at the top of the stack,
-** consumed). Cached for the message.
-*/
-static EClass *enc_classify(lua_State *L, Enc *e, GCtab *mt)
+static EClass *cls_find(Enc *e, GCtab *mt, int isud)
 {
-  int i;
-  EClass *c;
-  const char *kind;
-  for (i = 0; i < e->nmtc; i++)
-    if (e->mtc[i].mt == mt) {
-      lua_pop(L, 1);
-      return &e->mtc[i];
+  uint32_t i;
+  if (!e->cls) return NULL;
+  for (i = ptr_hash((uintptr_t)mt + (uintptr_t)isud) & e->clsmask; e->cls[i].mt;
+       i = (i + 1) & e->clsmask)
+    if (e->cls[i].mt == mt && e->cls[i].isud == isud) return &e->cls[i];
+  return NULL;
+}
+
+static EClass *cls_add(lua_State *L, Enc *e, GCtab *mt, int isud)
+{
+  uint32_t i;
+  if (!e->cls || (e->ncls + 1) * 2 > e->clsmask + 1) {
+    uint32_t nsize = e->cls ? (e->clsmask + 1) * 2 : 16, j;
+    EClass *nc = (EClass *)calloc(nsize, sizeof(EClass));
+    if (!nc) enc_nomem(L);
+    if (e->cls) {
+      for (j = 0; j <= e->clsmask; j++) {
+	EClass *c = &e->cls[j];
+	if (c->mt) {
+	  uint32_t x = ptr_hash((uintptr_t)c->mt + (uintptr_t)c->isud) & (nsize - 1);
+	  while (nc[x].mt) x = (x + 1) & (nsize - 1);
+	  nc[x] = *c;
+	}
+      }
     }
+    free(e->cls);
+    e->cls = nc;
+    e->clsmask = nsize - 1;
+  }
+  for (i = ptr_hash((uintptr_t)mt + (uintptr_t)isud) & e->clsmask; e->cls[i].mt;
+       i = (i + 1) & e->clsmask) ;
+  e->ncls++;
+  e->cls[i].mt = mt;
+  e->cls[i].isud = isud;
+  return &e->cls[i];
+}
+
+/* The class of metatable mt for a table or a userdata, found for value o.
+** Kept for the message.
+*/
+static EClass *enc_classify(lua_State *L, Enc *e, GCtab *mt, cTValue *o)
+{
+  int isud = tvisudata(o);
+  EClass *c = cls_find(e, mt, isud);
+  const char *kind;
+  if (c) return c;
   luaL_checkstack(L, 6, "transfer");
   settabV(L, L->top, mt);
   incr_top(L);
-  lua_insert(L, -2);  /* mt, v */
+  copyTV(L, L->top, o);
+  incr_top(L);
   enc_ask(L, e, "classify", 2);  /* kind, a, b */
   kind = lua_tostring(L, -3);
-  if (e->nmtc < NMTCACHE) {
-    c = &e->mtc[e->nmtc++];
-  } else {
-    c = &e->mtc[NMTCACHE - 1];  /* Replaced: a message with many metatables. */
-  }
-  c->mt = mt;
+  c = cls_add(L, e, mt, isud);
   c->encref = 0;
   c->ref = 0;
   if (kind && strcmp(kind, "named") == 0 && lua_type(L, -2) == LUA_TSTRING &&
-      lua_type(L, -1) == LUA_TSTRING) {
+      lua_type(L, -1) == LUA_TSTRING && !isud) {
     c->kind = EC_NAMED;
     c->ref = ref_index(L, e, NLT_REF_NAMED, strV(L->top - 2), strV(L->top - 1));
   } else if (kind && strcmp(kind, "builtin") == 0 &&
-	     lua_type(L, -2) == LUA_TSTRING) {
+	     lua_type(L, -2) == LUA_TSTRING && !isud) {
     c->kind = EC_BUILTIN;
     c->ref = ref_index(L, e, NLT_REF_BUILTIN, NULL, strV(L->top - 2));
   } else if (kind && strcmp(kind, "meta") == 0 &&
-	     lua_type(L, -2) == LUA_TSTRING) {
+	     lua_type(L, -2) == LUA_TSTRING && !isud) {
     c->kind = EC_META;
     c->ref = ref_index(L, e, NLT_REF_META, NULL, strV(L->top - 2));
-  } else if (kind && strcmp(kind, "host") == 0 &&
+  } else if (kind && strcmp(kind, "host") == 0 && isud &&
 	     lua_type(L, -2) == LUA_TSTRING && lua_isfunction(L, -1)) {
     c->kind = EC_HOST;
     c->ref = ref_index(L, e, NLT_REF_HOST, NULL, strV(L->top - 2));
     lua_pushvalue(L, -1);
-    c->encref = (int)enc_anchor(L, e);
-  } else if (kind && strcmp(kind, "type") == 0) {
+    c->encref = enc_anchor(L, e);
+  } else if (kind && strcmp(kind, "type") == 0 && !isud) {
     c->kind = EC_TYPE;
   } else {
     c->kind = EC_BAD;
-    /* The message stays with the class: anchored under the ref field. */
-    lua_pushvalue(L, -2);
+    if (lua_type(L, -2) == LUA_TSTRING && kind && strcmp(kind, "bad") == 0)
+      lua_pushvalue(L, -2);
+    else if (isud)
+      lua_pushliteral(L, "a userdata of a type that cannot cross");
+    else  /* The stand-in's message (runtime/nl_64_worker.lua). */
+      lua_pushliteral(L, "a table with a metatable that is not a struct");
     c->ref = enc_anchor(L, e);
   }
   lua_pop(L, 3);
@@ -445,13 +498,10 @@ static EClass *enc_classify(lua_State *L, Enc *e, GCtab *mt)
 }
 
 /* Fails with the message a classification gave. */
-static void enc_failclass(lua_State *L, Enc *e, EClass *c, cTValue *o)
+static void enc_failclass(lua_State *L, Enc *e, EClass *c)
 {
-  copyTV(L, L->top, o);
-  incr_top(L);
   lua_rawgeti(L, e->anchor, (int)c->ref);
-  lua_replace(L, -2);
-  enc_fail(L, e, "classified", -1);
+  enc_fail(L, e, "classified", -1, 0);
 }
 
 static void enc_pushframe(lua_State *L, Enc *e, GCtab *t, uint32_t hostid,
@@ -466,29 +516,30 @@ static void enc_pushframe(lua_State *L, Enc *e, GCtab *t, uint32_t hostid,
   e->nfr++;
 }
 
-/* Writes a reference to the ref of a named value (function or type) found in
-** ctx.named, or fails with code. o is the value.
+static void enc_writeref(lua_State *L, Enc *e, uint32_t r)
+{
+  enc_need(L, e, 5);
+  enc_byte(e, TT_REF);
+  enc_u32(e, r);
+}
+
+/* Writes a reference to the ref of a named value found in ctx.named, or
+** fails with code. o is the value.
 */
 static void enc_named(lua_State *L, Enc *e, cTValue *o, const char *code)
 {
-  cTValue *info;
-  GCtab *named;
-  named = e->named;
-  info = named ? lj_tab_get(L, named, o) : NULL;
+  cTValue *info = e->named ? lj_tab_get(L, e->named, o) : NULL;
   if (info && tvistab(info)) {
     GCtab *it = tabV(info);
     cTValue *f = lj_tab_getint(it, 1), *n = lj_tab_getint(it, 2);
     if (f && n && tvisstr(f) && tvisstr(n)) {
-      uint32_t r = ref_index(L, e, NLT_REF_NAMED, strV(f), strV(n));
-      enc_need(L, e, 5);
-      enc_byte(e, TT_REF);
-      enc_u32(e, r);
+      enc_writeref(L, e, ref_index(L, e, NLT_REF_NAMED, strV(f), strV(n)));
       return;
     }
   }
   copyTV(L, L->top, o);
   incr_top(L);
-  enc_fail(L, e, code, -1);
+  enc_fail(L, e, code, -1, 0);
 }
 
 /* A type value (a struct, enum, module, interface or built-in type itself):
@@ -507,54 +558,62 @@ static void enc_typevalue(lua_State *L, Enc *e, cTValue *o)
     uint32_t r = ref_index(L, e, NLT_REF_NAMED, strV(L->top - 2),
 			   strV(L->top - 1));
     lua_pop(L, 3);
-    enc_need(L, e, 5);
-    enc_byte(e, TT_REF);
-    enc_u32(e, r);
+    enc_writeref(L, e, r);
   } else if (kind && strcmp(kind, "builtin") == 0 &&
 	     lua_type(L, -2) == LUA_TSTRING) {
     uint32_t r = ref_index(L, e, NLT_REF_BUILTIN, NULL, strV(L->top - 2));
     lua_pop(L, 3);
-    enc_need(L, e, 5);
-    enc_byte(e, TT_REF);
-    enc_u32(e, r);
+    enc_writeref(L, e, r);
   } else {
     lua_pop(L, 1);  /* kind, message */
     lua_remove(L, -2);
-    enc_fail(L, e, "classified", -1);
+    enc_fail(L, e, "classified", -1, 0);
   }
 }
 
-/* Anchors the tables of the open frames not anchored yet. */
-static void enc_anchorframes(lua_State *L, Enc *e)
+/* A new object (o: the value), with the place of its tag (written next). */
+static uint32_t enc_newobj(lua_State *L, Enc *e, cTValue *o)
 {
-  uint32_t k;
-  for (k = 0; k < e->nfr; k++) {
-    EFrame *f = &e->fr[k];
-    if (f->t && !f->anchored) {
-      f->anchored = 1;
-      settabV(L, L->top, f->t);
-      incr_top(L);
-      enc_anchor(L, e);
-    }
+  if (e->nobj >= e->szobj) {
+    uint32_t nsz = e->szobj ? e->szobj * 2 : 64;
+    size_t *na;
+    TValue *nt;
+    if (nsz < e->szobj) enc_nomem(L);
+    na = (size_t *)realloc(e->objat, (size_t)nsz * sizeof(size_t));
+    if (!na) enc_nomem(L);
+    e->objat = na;
+    nt = (TValue *)realloc(e->objtv, (size_t)nsz * sizeof(TValue));
+    if (!nt) enc_nomem(L);
+    e->objtv = nt;
+    e->szobj = nsz;
   }
-}
-
-/* A new object: its id, with the place of its tag (written next). */
-static uint32_t enc_newobj(lua_State *L, Enc *e)
-{
-  size_t *slot = (size_t *)enc_slot(L, (void **)&e->objat, e->nobj,
-				    &e->szobjat, sizeof(size_t));
-  *slot = e->out.n;
+  e->objat[e->nobj] = e->n;
+  copyTV(L, &e->objtv[e->nobj], o);
   return ++e->nobj;
 }
 
 /* A BACK to object id: its tag gets TT_KEEP. */
 static void enc_back(lua_State *L, Enc *e, uint32_t id)
 {
-  if (id >= 1 && id <= e->nobj) e->out.p[e->objat[id - 1]] |= (char)TT_KEEP;
+  if (id >= 1 && id <= e->nobj) e->buf[e->objat[id - 1]] |= (char)TT_KEEP;
   enc_need(L, e, 5);
   enc_byte(e, TT_BACK);
   enc_u32(e, id);
+}
+
+/* Before a host callback (which may change and collect what is being
+** sent): anchors the objects written since the last time, so that none of
+** them is freed while its address is in the seen table. Linear over the
+** message.
+*/
+static void enc_anchorobjects(lua_State *L, Enc *e)
+{
+  luaL_checkstack(L, 2, "transfer");
+  for (; e->nanchoredobj < e->nobj; e->nanchoredobj++) {
+    copyTV(L, L->top, &e->objtv[e->nanchoredobj]);
+    incr_top(L);
+    enc_anchor(L, e);
+  }
 }
 
 /* Whether host object id still has its payload being written. */
@@ -566,30 +625,67 @@ static int enc_hostopen(Enc *e, uint32_t id)
   return 0;
 }
 
-/* Writes o. A table or a host userdata opens a frame that the loop in
-** lj_nl_encode fills.
+/* encode(userdata) for a host type, protected: the value sent in its place
+** is left on top. A callback that raises, or returns nothing, is a
+** SendError with the path of the userdata.
 */
+static void enc_callhost(lua_State *L, Enc *e, EClass *c, cTValue *o)
+{
+  int top, st;
+  enc_anchorobjects(L, e);
+  luaL_checkstack(L, 6, "transfer");
+  top = lua_gettop(L);
+  lua_rawgeti(L, e->anchor, (int)c->encref);
+  copyTV(L, L->top, o);
+  incr_top(L);
+  st = lua_pcall(L, 1, LUA_MULTRET, 0);
+  if (st != 0) {
+    copyTV(L, L->top, o);
+    incr_top(L);
+    enc_fail(L, e, "callback", -1, -2);
+  }
+  if (lua_gettop(L) == top) {
+    copyTV(L, L->top, o);
+    incr_top(L);
+    enc_fail(L, e, "nothing", -1, 0);
+  }
+  lua_settop(L, top + 1);
+}
+
+/* Writes o. A table or a host userdata opens a frame that enc_run fills. */
 static void enc_put(lua_State *L, Enc *e, cTValue *o)
 {
   if (tvisstr(o)) {
     GCstr *s = strV(o);
     MSize len = s->len;
-    enc_need(L, e, 9 + (size_t)len);
-    enc_byte(e, TT_STR);
+    if (len >= OSTR_MIN) {
+      uint32_t id = seen_get(e, s);
+      if (id) {
+	enc_back(L, e, id);
+	return;
+      }
+      enc_need(L, e, 5 + (size_t)len);
+      id = enc_newobj(L, e, o);
+      seen_put(L, e, s, id);
+      enc_byte(e, TT_OSTR);
+    } else {
+      enc_need(L, e, 5 + (size_t)len);
+      enc_byte(e, TT_STR);
+    }
     enc_u32(e, (uint32_t)len);
-    memcpy(e->out.p + e->out.n, strdata(s), len);
-    e->out.n += len;
+    memcpy(e->buf + e->n, strdata(s), len);
+    e->n += len;
   } else if (tvisint(o)) {
     int32_t x = intV(o);
     enc_need(L, e, 5);
     enc_byte(e, TT_INT);
-    memcpy(e->out.p + e->out.n, &x, 4);
-    e->out.n += 4;
+    memcpy(e->buf + e->n, &x, 4);
+    e->n += 4;
   } else if (tvisnum(o)) {
     enc_need(L, e, 9);
     enc_byte(e, TT_NUM);
-    memcpy(e->out.p + e->out.n, &o->u64, 8);
-    e->out.n += 8;
+    memcpy(e->buf + e->n, &o->u64, 8);
+    e->n += 8;
   } else if (tvisnil(o)) {
     enc_need(L, e, 1);
     enc_byte(e, TT_NIL);
@@ -618,10 +714,7 @@ static void enc_put(lua_State *L, Enc *e, cTValue *o)
     }
     mt = tabref(t->metatable);
     if (mt) {
-      EClass *c;
-      copyTV(L, L->top, o);
-      incr_top(L);
-      c = enc_classify(L, e, mt);
+      EClass *c = enc_classify(L, e, mt, o);
       switch (c->kind) {
       case EC_NAMED: case EC_BUILTIN: case EC_META:
 	withmt = 1;
@@ -631,12 +724,12 @@ static void enc_put(lua_State *L, Enc *e, cTValue *o)
 	enc_typevalue(L, e, o);
 	return;
       default:
-	enc_failclass(L, e, c, o);
+	enc_failclass(L, e, c);
 	return;
       }
     }
-    enc_need(L, e, 13);
-    id = enc_newobj(L, e);
+    enc_need(L, e, 18);
+    id = enc_newobj(L, e, o);
     seen_put(L, e, t, id);
     if (withmt) {
       enc_byte(e, TT_TABMT);
@@ -646,6 +739,7 @@ static void enc_put(lua_State *L, Enc *e, cTValue *o)
     }
     {
       uint32_t narr = 0, nhash = 0, j;
+      EFrame *f;
       if (t->asize > 0) {
 	TValue *array = tvref(t->array);
 	int64_t i;
@@ -660,16 +754,15 @@ static void enc_put(lua_State *L, Enc *e, cTValue *o)
       }
       enc_u32(e, narr ? narr - 1 : 0);
       enc_u32(e, nhash);
-      enc_pushframe(L, e, t, 0, 0);
-      e->fr[e->nfr - 1].narr = narr;
-      e->fr[e->nfr - 1].i = 1;
       if (narr > 1) {
-	enc_need(L, e, 5);
 	enc_byte(e, TT_ARR);
 	enc_u32(e, narr - 1);
-      } else {
-	e->fr[e->nfr - 1].phase = 1;
       }
+      enc_pushframe(L, e, t, 0, 0);
+      f = &e->fr[e->nfr - 1];
+      f->narr = narr;
+      f->i = 1;
+      if (narr <= 1) f->phase = 1;
     }
   } else if (tvisfunc(o)) {
     enc_named(L, e, o, "function");
@@ -682,7 +775,7 @@ static void enc_put(lua_State *L, Enc *e, cTValue *o)
       if (enc_hostopen(e, id)) {
 	copyTV(L, L->top, o);
 	incr_top(L);
-	enc_fail(L, e, "selfhost", -1);
+	enc_fail(L, e, "selfhost", -1, 0);
       }
       enc_back(L, e, id);
       return;
@@ -690,37 +783,21 @@ static void enc_put(lua_State *L, Enc *e, cTValue *o)
     if (!mt) {
       copyTV(L, L->top, o);
       incr_top(L);
-      enc_fail(L, e, "userdata", -1);
+      enc_fail(L, e, "userdata", -1, 0);
     }
-    copyTV(L, L->top, o);
-    incr_top(L);
-    c = enc_classify(L, e, mt);
+    c = enc_classify(L, e, mt, o);
     if (c->kind != EC_HOST) {
-      if (c->kind == EC_BAD) enc_failclass(L, e, c, o);
+      if (c->kind == EC_BAD) enc_failclass(L, e, c);
       copyTV(L, L->top, o);
       incr_top(L);
-      enc_fail(L, e, "userdata", -1);
+      enc_fail(L, e, "userdata", -1, 0);
     }
-    id = 0;  /* Numbered when its tag is written, below. */
-    /* encode(userdata) -> the value that is sent in its place. It is host
-    ** code: whatever it does to the structure being walked, the tables of
-    ** the open frames stay alive (they are reachable from the values being
-    ** sent otherwise, and nothing else runs script code during an encode).
-    */
-    enc_anchorframes(L, e);
-    luaL_checkstack(L, 4, "transfer");
-    lua_rawgeti(L, e->anchor, c->encref);
-    copyTV(L, L->top, o);
-    incr_top(L);
-    copyTV(L, L->top, o);  /* Keeps the userdata alive. */
-    incr_top(L);
-    enc_anchor(L, e);
-    lua_call(L, 1, 1);
+    enc_callhost(L, e, c, o);  /* The value sent in its place, on top. */
     {
       uint32_t a = enc_anchor(L, e);
       uint32_t *slot;
       enc_need(L, e, 5);
-      id = enc_newobj(L, e);
+      id = enc_newobj(L, e, o);
       seen_put(L, e, ud, id);
       enc_byte(e, TT_HOST);
       enc_u32(e, c->ref);
@@ -733,12 +810,12 @@ static void enc_put(lua_State *L, Enc *e, cTValue *o)
   } else if (tvisthread(o)) {
     copyTV(L, L->top, o);
     incr_top(L);
-    enc_fail(L, e, "coroutine", -1);
+    enc_fail(L, e, "coroutine", -1, 0);
   } else {
     /* Light userdata, cdata. */
     copyTV(L, L->top, o);
     incr_top(L);
-    enc_fail(L, e, "userdata", -1);
+    enc_fail(L, e, "userdata", -1, 0);
   }
 }
 
@@ -800,8 +877,8 @@ static void enc_run(lua_State *L, Enc *e)
 	setnumV(&k, 0);
 	enc_need(L, e, 9);
 	enc_byte(e, TT_NUM);
-	memcpy(e->out.p + e->out.n, &k.u64, 8);
-	e->out.n += 8;
+	memcpy(e->buf + e->n, &k.u64, 8);
+	e->n += 8;
 	f->adv = 1;
 	copyTV(L, &v, arrayslot(t, 0));
 	enc_put(L, e, &v);
@@ -833,48 +910,46 @@ static void enc_run(lua_State *L, Enc *e)
   }
 }
 
-static void hdr_u32(Buf *b, uint32_t v)
+static void hdr_u32(Enc *e, uint32_t v)
 {
-  memcpy(b->p + b->n, &v, 4);
-  b->n += 4;
+  memcpy(e->buf + e->n, &v, 4);
+  e->n += 4;
 }
 
-/* Builds the message: header, then the values. */
-static NLMsg *enc_finish(lua_State *L, Enc *e, uint32_t nvalues)
+/* Appends the header and makes the buffer the message. */
+static void enc_finish(lua_State *L, Enc *e, uint32_t nvalues)
 {
-  Buf h;
   uint32_t i;
-  size_t hsize = 4 + 4 + 4 + 4;
+  size_t hsize = 4 + 4 + 4, at;
+  uint64_t off;
   NLMsg *m;
   for (i = 0; i < e->nfiles; i++) hsize += 4 + e->files[i]->len;
   for (i = 0; i < e->nrefs; i++) hsize += 1 + 4 + 4 + e->refs[i].name->len;
-  m = (NLMsg *)malloc(sizeof(NLMsg) + hsize + e->out.n);
-  if (!m) enc_nomem(L);
-  h.p = m->data;
-  h.n = 0;
-  h.cap = hsize;
-  memcpy(h.p, MSG_MAGIC, 4);
-  h.n = 4;
-  hdr_u32(&h, e->nfiles);
+  enc_need(L, e, hsize);
+  at = e->n;
+  hdr_u32(e, e->nfiles);
   for (i = 0; i < e->nfiles; i++) {
     GCstr *s = e->files[i];
-    hdr_u32(&h, s->len);
-    memcpy(h.p + h.n, strdata(s), s->len);
-    h.n += s->len;
+    hdr_u32(e, s->len);
+    memcpy(e->buf + e->n, strdata(s), s->len);
+    e->n += s->len;
   }
-  hdr_u32(&h, e->nrefs);
+  hdr_u32(e, e->nrefs);
   for (i = 0; i < e->nrefs; i++) {
     ERef *r = &e->refs[i];
-    h.p[h.n++] = (char)r->kind;
-    hdr_u32(&h, r->file);
-    hdr_u32(&h, r->name->len);
-    memcpy(h.p + h.n, strdata(r->name), r->name->len);
-    h.n += r->name->len;
+    e->buf[e->n++] = (char)r->kind;
+    hdr_u32(e, r->file);
+    hdr_u32(e, r->name->len);
+    memcpy(e->buf + e->n, strdata(r->name), r->name->len);
+    e->n += r->name->len;
   }
-  hdr_u32(&h, nvalues);
-  if (e->out.n) memcpy(h.p + h.n, e->out.p, e->out.n);
-  m->size = hsize + e->out.n;
-  return m;
+  hdr_u32(e, nvalues);
+  off = (uint64_t)(at - MSG_DATA);
+  memcpy(e->buf + MSG_DATA + 4, &off, 8);
+  m = (NLMsg *)(void *)e->buf;
+  m->size = e->n - MSG_DATA;
+  e->result = m;
+  e->buf = NULL;  /* The message owns it now. */
 }
 
 /* Pushes the transfer context, or raises. */
@@ -889,27 +964,12 @@ static void push_ctx(lua_State *L)
   luaL_error(L, "the NL runtime has set up no transfer context (workers)");
 }
 
-/* Encodes the n values from stack index base on. The label of value i is
-** labels[i] of the table at labidx when it has one, else "argument i".
-** Raises SendError (through ctx.fail) for a value that cannot cross.
-*/
-NLMsg *lj_nl_encode(lua_State *L, int base, int n, int labidx)
+/* The encoder's protected call: (enc, labels | nil, values...). */
+static int enc_main(lua_State *L)
 {
-  Enc *e;
-  int i, top;
-  NLMsg *m;
-  base = lj_nl_absindex(L, base);
-  if (labidx) labidx = lj_nl_absindex(L, labidx);
+  Enc *e = (Enc *)lua_touserdata(L, 1);
+  int n = lua_gettop(L) - 2, i;
   luaL_checkstack(L, 12, "transfer");
-  e = (Enc *)lua_newuserdata(L, sizeof(Enc));
-  memset(e, 0, sizeof(Enc));
-  e->magic = ENC_MAGIC;
-  if (luaL_newmetatable(L, "nl.transfer.encoder")) {
-    lua_pushcfunction(L, enc_gc);
-    lua_setfield(L, -2, "__gc");
-  }
-  lua_setmetatable(L, -2);
-  top = lua_gettop(L);
   push_ctx(L);
   e->ctx = lua_gettop(L);
   lua_getfield(L, e->ctx, "named");
@@ -920,30 +980,54 @@ NLMsg *lj_nl_encode(lua_State *L, int base, int n, int labidx)
   lua_pushnil(L);  /* The anchors, made when needed (enc_anchor). */
   e->anchor = lua_gettop(L);
   lua_pushnil(L);  /* The label of the value being written. */
+  e->part = lua_gettop(L);
+  enc_need(L, e, MSG_DATA + MSG_PREFIX);
+  e->n = MSG_DATA;
+  memcpy(e->buf + e->n, MSG_MAGIC, 4);
+  e->n += MSG_PREFIX;
   for (i = 0; i < n; i++) {
-    char buf[32];
-    lua_pushnil(L);
-    if (labidx && lua_istable(L, labidx)) {
-      lua_pop(L, 1);
-      lua_rawgeti(L, labidx, i + 1);
-    }
+    TValue v;
+    if (lua_istable(L, 2)) lua_rawgeti(L, 2, i + 1); else lua_pushnil(L);
     if (lua_type(L, -1) != LUA_TSTRING) {
       lua_pop(L, 1);
-      snprintf(buf, sizeof(buf), "argument %d", i + 1);
-      lua_pushstring(L, buf);
+      lua_pushfstring(L, "argument %d", i + 1);
     }
-    lua_replace(L, e->anchor + 1);
-    e->partidx = e->anchor + 1;
-    {
-      TValue v;
-      copyTV(L, &v, L->base + (base + i - 1));  /* Stays on the stack. */
-      enc_put(L, e, &v);
-    }
+    lua_replace(L, e->part);
+    copyTV(L, &v, L->base + 2 + i);  /* Stays on the stack. */
+    enc_put(L, e, &v);
     enc_run(L, e);
   }
-  m = enc_finish(L, e, (uint32_t)n);
-  enc_release(e);
-  lua_settop(L, top - 1);
+  enc_finish(L, e, (uint32_t)n);
+  return 0;
+}
+
+/* Encodes the n values from stack index base on. The label of value i is
+** labels[i] of the table at labidx when it has one, else "argument i".
+** Raises SendError (through ctx.fail) for a value that cannot cross, after
+** freeing what it had built.
+*/
+NLMsg *lj_nl_encode(lua_State *L, int base, int n, int labidx)
+{
+  Enc *e;
+  int i, st;
+  NLMsg *m;
+  base = lj_nl_absindex(L, base);
+  if (labidx) labidx = lj_nl_absindex(L, labidx);
+  if (!lua_checkstack(L, n + 4)) luaL_error(L, "too many values to send");
+  e = (Enc *)calloc(1, sizeof(Enc));
+  if (!e) enc_nomem(L);
+  lua_pushcfunction(L, enc_main);
+  lua_pushlightuserdata(L, e);
+  if (labidx) lua_pushvalue(L, labidx); else lua_pushnil(L);
+  for (i = 0; i < n; i++) lua_pushvalue(L, base + i);
+  st = lua_pcall(L, n + 2, 0, 0);
+  m = e->result;
+  enc_release(L, e);
+  free(e);
+  if (st != 0) {
+    lj_nl_msgfree(m);
+    lua_error(L);
+  }
   return m;
 }
 
@@ -972,33 +1056,20 @@ typedef struct DFrame {
   DVal key;
 } DFrame;
 
-#define DEC_MAGIC	0x4e4c4445u	/* "NLDE" */
-
 /* Open tables stay on the Lua stack this deep; deeper ones are found in
 ** objs (the stack of a C function is limited to LUAI_MAXCSTACK slots).
 */
 #define DEC_STACKDEPTH	2000
 
 typedef struct Dec {
-  unsigned magic;
   const char *p, *end;
   DFrame *fr;
   uint32_t nfr, szfr;
   uint32_t nobj;
-  int objs, refs;	/* Stack indices. */
-  DVal *top;		/* The top-level values. */
+  uint32_t nrefs;
+  int ctx, objs, refs;	/* Stack indices. */
   uint32_t ntop, sztop;
 } Dec;
-
-static int dec_gc(lua_State *L)
-{
-  Dec *d = (Dec *)lua_touserdata(L, 1);
-  if (d && lua_objlen(L, 1) >= sizeof(Dec) && d->magic == DEC_MAGIC) {
-    free(d->fr); d->fr = NULL;
-    free(d->top); d->top = NULL;
-  }
-  return 0;
-}
 
 static void dec_bad(lua_State *L)
 {
@@ -1049,6 +1120,27 @@ static DFrame *dec_pushframe(lua_State *L, Dec *d)
   return f;
 }
 
+/* decode(payload) for a host type, protected: the userdata it makes is left
+** on top. A function that raises or returns something other than a
+** userdata is a SendError on arrival (ctx.recvfail).
+*/
+static void dec_callhost(lua_State *L, Dec *d, uint32_t ref, const DVal *v)
+{
+  int top = lua_gettop(L), failed;
+  luaL_checkstack(L, 6, "transfer");
+  lua_rawgeti(L, d->refs, (int)ref);
+  dec_pushval(L, d, v);
+  failed = lua_pcall(L, 1, 1, 0) != 0;
+  if (failed || lua_type(L, -1) != LUA_TUSERDATA) {
+    lua_getfield(L, d->ctx, "recvfail");
+    lua_pushstring(L, failed ? "failed" : "returned");
+    lua_rawgeti(L, d->refs, -(int)ref);  /* The type's name (dec_main). */
+    lua_pushvalue(L, top + 1);
+    lua_call(L, 3, 0);
+    dec_bad(L);  /* ctx.recvfail raises; not reached. */
+  }
+}
+
 /* A value is complete: it goes to the frame on top, or to the top level. A
 ** host frame takes it as its payload and completes in turn with the
 ** userdata that its decode function makes of it.
@@ -1066,12 +1158,9 @@ static void dec_complete(lua_State *L, Dec *d, DVal v)
     }
     f = &d->fr[d->nfr - 1];
     if (f->host) {
-      uint32_t obj = f->obj;
-      lua_rawgeti(L, d->refs, (int)f->ref);
-      dec_pushval(L, d, &v);
+      uint32_t obj = f->obj, ref = f->ref;
       d->nfr--;
-      lua_call(L, 1, 1);
-      /* The userdata is on top; it goes where the value goes, through objs. */
+      dec_callhost(L, d, ref, &v);
       lua_rawseti(L, d->objs, (int)obj);
       v.tag = DV_OBJ;
       v.id = obj;
@@ -1114,8 +1203,9 @@ static void dec_complete(lua_State *L, Dec *d, DVal v)
 }
 
 /* Reads the values. */
-static void dec_values(lua_State *L, Dec *d, uint32_t nvalues, uint32_t nrefs)
+static void dec_values(lua_State *L, Dec *d, uint32_t nvalues)
 {
+  uint32_t nrefs = d->nrefs;
   while (d->ntop < nvalues || d->nfr > 0) {
     int tag = dec_byte(L, d), keep = tag & TT_KEEP;
     DVal v;
@@ -1137,22 +1227,23 @@ static void dec_values(lua_State *L, Dec *d, uint32_t nvalues, uint32_t nrefs)
       d->p += 4;
       v.tag = DV_INT;
       break;
-    case TT_STR: case TT_LSTR: {
-      size_t len;
-      if (tag == TT_STR) {
-	len = dec_u32(L, d);
-      } else {
-	uint64_t l64;
-	if ((size_t)(d->end - d->p) < 8) dec_bad(L);
-	memcpy(&l64, d->p, 8);
-	d->p += 8;
-	len = (size_t)l64;
-      }
+    case TT_STR: case TT_OSTR: {
+      size_t len = dec_u32(L, d);
       if ((size_t)(d->end - d->p) < len) dec_bad(L);
       v.tag = DV_STR;
       v.s = d->p;
       v.len = len;
       d->p += len;
+      if (tag == TT_OSTR) {
+	uint32_t id = ++d->nobj;
+	if (keep) {
+	  /* Kept where a BACK finds it; the value is that object. */
+	  lua_pushlstring(L, v.s, v.len);
+	  lua_rawseti(L, d->objs, (int)id);
+	  v.tag = DV_OBJ;
+	  v.id = id;
+	}
+      }
       break;
     }
     case TT_REF:
@@ -1236,6 +1327,7 @@ static void dec_values(lua_State *L, Dec *d, uint32_t nvalues, uint32_t nrefs)
 	  }
 	  if (!p) {
 	    /* A top-level value: it stays where it is, on top. */
+	    if (d->ntop >= d->sztop) dec_bad(L);
 	    d->nfr--;
 	    d->ntop++;
 	    continue;
@@ -1262,51 +1354,45 @@ static void dec_values(lua_State *L, Dec *d, uint32_t nvalues, uint32_t nrefs)
   }
 }
 
-/* Decodes m in L: loads the files it lists that L lacks (ctx.load), looks
-** its refs up (ctx.resolve), then builds the values and pushes them. Returns
-** their number. Raises when a file cannot be loaded or a ref is missing; the
-** message is not freed.
-*/
-int lj_nl_decode(lua_State *L, const NLMsg *m)
+/* The decoder's protected call: (dec, msg). Leaves the values. */
+static int dec_main(lua_State *L)
 {
-  Dec *d;
+  Dec *d = (Dec *)lua_touserdata(L, 1);
+  const NLMsg *m = (const NLMsg *)lua_touserdata(L, 2);
   uint32_t nfiles, nrefs, nvalues, i;
-  int top, base;
-  const char *filesat;
+  uint64_t off;
+  const char *data = m->data, *hdr, *filesat;
+  int base;
+  lua_settop(L, 0);
   luaL_checkstack(L, 12 + DEC_STACKDEPTH, "transfer");
-  d = (Dec *)lua_newuserdata(L, sizeof(Dec));
-  memset(d, 0, sizeof(Dec));
-  d->magic = DEC_MAGIC;
-  if (luaL_newmetatable(L, "nl.transfer.decoder")) {
-    lua_pushcfunction(L, dec_gc);
-    lua_setfield(L, -2, "__gc");
-  }
-  lua_setmetatable(L, -2);
-  top = lua_gettop(L);
   push_ctx(L);
-  base = lua_gettop(L);  /* ctx */
-  d->p = m->data;
-  d->end = m->data + m->size;
-  if (m->size < 4 || memcmp(d->p, MSG_MAGIC, 4) != 0) dec_bad(L);
-  d->p += 4;
+  d->ctx = 1;
+  if (m->size < MSG_PREFIX || memcmp(data, MSG_MAGIC, 4) != 0) dec_bad(L);
+  memcpy(&off, data + 4, 8);
+  if (off < MSG_PREFIX || off > (uint64_t)m->size) dec_bad(L);
+  hdr = data + (size_t)off;
+  /* The header first. */
+  d->p = hdr;
+  d->end = data + m->size;
   nfiles = dec_u32(L, d);
   filesat = d->p;
   /* The files: loaded first, so that their registries hold the refs. */
   for (i = 0; i < nfiles; i++) {
     uint32_t len = dec_u32(L, d);
     if ((size_t)(d->end - d->p) < len) dec_bad(L);
-    lua_getfield(L, base, "load");
+    lua_getfield(L, d->ctx, "load");
     lua_pushlstring(L, d->p, len);
     lua_call(L, 1, 0);
     d->p += len;
   }
   nrefs = dec_u32(L, d);
+  d->nrefs = nrefs;
   lua_createtable(L, (int)(nrefs < 1024 ? nrefs : 1024), 0);
   d->refs = lua_gettop(L);
   for (i = 0; i < nrefs; i++) {
     int kind = dec_byte(L, d);
     uint32_t file = dec_u32(L, d), len;
-    lua_getfield(L, base, "resolve");
+    lua_getfield(L, d->ctx, "resolve");
     lua_pushinteger(L, kind);
     if (file == 0xffffffffu) {
       lua_pushnil(L);
@@ -1325,26 +1411,47 @@ int lj_nl_decode(lua_State *L, const NLMsg *m)
     len = dec_u32(L, d);
     if ((size_t)(d->end - d->p) < len) dec_bad(L);
     lua_pushlstring(L, d->p, len);
+    /* The name, for the messages of a decode function: refs[-i]. */
+    lua_pushvalue(L, -1);
+    lua_rawseti(L, d->refs, -(int)(i + 1));
     d->p += len;
     lua_call(L, 3, 1);
     lua_rawseti(L, d->refs, (int)i + 1);
   }
   nvalues = dec_u32(L, d);
-  if (nvalues > (uint32_t)(d->end - d->p)) dec_bad(L);
+  /* Then the values. */
+  d->p = data + MSG_PREFIX;
+  d->end = hdr;
+  if ((size_t)nvalues > (size_t)(d->end - d->p)) dec_bad(L);
   lua_newtable(L);
   d->objs = lua_gettop(L);
+  base = d->objs;
   d->sztop = nvalues;
   luaL_checkstack(L, (int)nvalues + 4, "too many values in a message");
-  dec_values(L, d, nvalues, nrefs);
-  /* Moves them down over the work slots: d, ctx, refs, objs. */
-  for (i = 0; i < nvalues; i++) {
-    lua_pushvalue(L, top + 4 + (int)i);
-    lua_replace(L, top + (int)i);
-  }
-  lua_settop(L, top - 1 + (int)nvalues);
-  free(d->fr); d->fr = NULL;
-  free(d->top); d->top = NULL;
-  return (int)nvalues;
+  dec_values(L, d, nvalues);
+  return lua_gettop(L) - base;
+}
+
+/* Decodes m in L: loads the files it lists that L lacks (ctx.load), looks
+** its refs up (ctx.resolve), then builds the values and pushes them. Returns
+** their number. Raises when a file cannot be loaded or a ref is missing,
+** after freeing what it had built; the message is not freed.
+*/
+int lj_nl_decode(lua_State *L, const NLMsg *m)
+{
+  Dec *d;
+  int top = lua_gettop(L), st;
+  if (!lua_checkstack(L, 4)) luaL_error(L, "stack overflow (transfer)");
+  d = (Dec *)calloc(1, sizeof(Dec));
+  if (!d) enc_nomem(L);
+  lua_pushcfunction(L, dec_main);
+  lua_pushlightuserdata(L, d);
+  lua_pushlightuserdata(L, (void *)m);
+  st = lua_pcall(L, 2, LUA_MULTRET, 0);
+  free(d->fr);
+  free(d);
+  if (st != 0) lua_error(L);
+  return lua_gettop(L) - top;
 }
 
 #endif

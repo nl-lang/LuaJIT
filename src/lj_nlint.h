@@ -138,6 +138,10 @@ LJ_FUNCA void lj_nl_pushhostworker(lua_State *L);
 LJ_FUNCA int lj_nl_stepworkers(lua_State *L);
 LJ_FUNCA void lj_nl_closeworkers(NLState *ns);
 LJ_FUNCA void lj_nl_portkill(NLPort *p);
+LJ_FUNCA int lj_nl_memcharge(lua_State *L, ptrdiff_t delta);
+LJ_FUNCA int lj_nl_condinit(NLCond *c);
+LJ_FUNCA int lj_nl_workersfrozen(NLState *ns);
+LJ_FUNCA void lj_nl_workerssandbox(NLState *ns);
 LJ_FUNCA void lj_nl_portunref(NLPort *p);
 
 /* lj_nlload.c */

@@ -825,13 +825,20 @@ LUA_API void nl_import(lua_State *L, const char *path)
   lua_call(L, 1, 1);
 }
 
+/* nl_adddecl and nl_addpath have no effect once workers exist (API.md 2.10):
+** the workers copied the declaration files and the search path when the
+** first of them started. (add_path in scripts still widens the main
+** state's own search.)
+*/
 LUA_API void nl_adddecl(lua_State *L, const char *name)
 {
+  if (lj_nl_workersfrozen(nl_state(L))) return;
   if (!lj_nl_adddecl(nl_state(L), name)) nomem(L);
 }
 
 LUA_API void nl_addpath(lua_State *L, const char *dir)
 {
+  if (lj_nl_workersfrozen(nl_state(L))) return;
   if (lj_nl_isopen(L)) {
     lj_nl_pushrt(L, "addpath");
     lua_pushstring(L, dir);

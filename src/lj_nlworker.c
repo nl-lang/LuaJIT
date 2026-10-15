@@ -78,6 +78,7 @@ static int mtx_init(NLMutex *m) { InitializeSRWLock(m); return 0; }
 static void mtx_destroy(NLMutex *m) { UNUSED(m); }
 static void mtx_lock(NLMutex *m) { AcquireSRWLockExclusive(m); }
 static void mtx_unlock(NLMutex *m) { ReleaseSRWLockExclusive(m); }
+int lj_nl_condinit(NLCond *c) { InitializeConditionVariable(c); return 0; }
 static int cond_init(NLCond *c) { InitializeConditionVariable(c); return 0; }
 static void cond_destroy(NLCond *c) { UNUSED(c); }
 static void cond_signal(NLCond *c) { WakeConditionVariable(c); }
@@ -132,27 +133,66 @@ static int mtx_init(NLMutex *m) { return pthread_mutex_init(m, NULL); }
 static void mtx_destroy(NLMutex *m) { pthread_mutex_destroy(m); }
 static void mtx_lock(NLMutex *m) { pthread_mutex_lock(m); }
 static void mtx_unlock(NLMutex *m) { pthread_mutex_unlock(m); }
-static int cond_init(NLCond *c) { return pthread_cond_init(c, NULL); }
+/* Timed waits measure time on the monotonic clock, as the deadlines of
+** worker timers do (now_mono), so that a change of the wall clock moves
+** neither: Linux and the BSDs set the condition variable's clock to
+** CLOCK_MONOTONIC; macOS has a relative wait instead.
+*/
+#if defined(__APPLE__)
+#define NL_COND_RELATIVE	1
+#elif defined(CLOCK_MONOTONIC) && !defined(__ANDROID__)
+#define NL_COND_MONOTONIC	1
+#endif
+
+int lj_nl_condinit(NLCond *c)
+{
+#ifdef NL_COND_MONOTONIC
+  pthread_condattr_t a;
+  int r;
+  if (pthread_condattr_init(&a) != 0) return -1;
+  pthread_condattr_setclock(&a, CLOCK_MONOTONIC);
+  r = pthread_cond_init(c, &a);
+  pthread_condattr_destroy(&a);
+  return r;
+#else
+  return pthread_cond_init(c, NULL);
+#endif
+}
+
+static int cond_init(NLCond *c) { return lj_nl_condinit(c); }
 static void cond_destroy(NLCond *c) { pthread_cond_destroy(c); }
 static void cond_signal(NLCond *c) { pthread_cond_signal(c); }
 
-/* Waits for c, at most `seconds` (forever when negative). */
+/* Waits for c, at most `seconds` (forever when negative). c was made by
+** lj_nl_condinit.
+*/
 static void cond_wait(NLCond *c, NLMutex *m, double seconds)
 {
   if (seconds < 0) {
     pthread_cond_wait(c, m);
   } else {
-    struct timeval tv;
     struct timespec ts;
-    double s;
     if (seconds > 1e6) seconds = 1e6;
-    gettimeofday(&tv, NULL);
-    s = (double)tv.tv_sec + (double)tv.tv_usec * 1e-6 + seconds;
-    ts.tv_sec = (time_t)s;
-    ts.tv_nsec = (long)((s - (double)ts.tv_sec) * 1e9);
-    if (ts.tv_nsec >= 1000000000L) { ts.tv_sec++; ts.tv_nsec -= 1000000000L; }
-    if (ts.tv_nsec < 0) ts.tv_nsec = 0;
-    pthread_cond_timedwait(c, m, &ts);
+#ifdef NL_COND_RELATIVE
+    ts.tv_sec = (time_t)seconds;
+    ts.tv_nsec = (long)((seconds - (double)ts.tv_sec) * 1e9);
+    pthread_cond_timedwait_relative_np(c, m, &ts);
+#else
+    {
+      double s;
+#ifdef NL_COND_MONOTONIC
+      clock_gettime(CLOCK_MONOTONIC, &ts);
+#else
+      clock_gettime(CLOCK_REALTIME, &ts);
+#endif
+      s = (double)ts.tv_sec + (double)ts.tv_nsec * 1e-9 + seconds;
+      ts.tv_sec = (time_t)s;
+      ts.tv_nsec = (long)((s - (double)ts.tv_sec) * 1e9);
+      if (ts.tv_nsec >= 1000000000L) { ts.tv_sec++; ts.tv_nsec -= 1000000000L; }
+      if (ts.tv_nsec < 0) ts.tv_nsec = 0;
+      pthread_cond_timedwait(c, m, &ts);
+    }
+#endif
   }
 }
 static int thread_start(NLThread *t, void *(*fn)(void *), void *arg)
@@ -377,6 +417,9 @@ struct NLWorker {
   int threaded;
   NLThread thread;
   int joined, exited;		/* Guarded by wk->mtx. */
+  int hrefs;			/* Handles (WorkerBox) that name it; guarded by
+				** wk->mtx. A dedicated worker that has ended
+				** is freed once none is left (workers_reap). */
   lua_State *L;			/* Its state: NULL once closed. */
   NLPort *port;			/* The state's port (ns->port of L). */
   NLPort *parentport;		/* Dedicated: the state that started it. */
@@ -418,6 +461,10 @@ struct NLWorkers {
   lua_CFunction init;		/* nl_setworkerinit. */
   void *initdata;
   NLSettings set;		/* What a new worker copies (guarded). */
+  int frozen;			/* The settings are fixed: the pool has started
+				** or a dedicated worker exists. */
+  int sandbox;			/* NL_OPT_SANDBOX is on: every worker applies it
+				** before it loads anything more. */
   int closing;
 };
 
@@ -454,8 +501,13 @@ static int settings_snapshot(lua_State *L, NLWorkers *wk)
 {
   NLState *ns = nl_state(L);
   NLSettings s;
+  int frozen;
   memset(&s, 0, sizeof(s));
   if (ns->worker) return 1;  /* A worker uses what it was given. */
+  mtx_lock(&wk->mtx);
+  frozen = wk->frozen;
+  mtx_unlock(&wk->mtx);
+  if (frozen) return 1;  /* Taken once, when the first worker started. */
   memcpy(s.opt, ns->opt, sizeof(s.opt));
   s.hasloader = ns->hasloader;
   s.loader = ns->loader;
@@ -471,7 +523,76 @@ static int settings_snapshot(lua_State *L, NLWorkers *wk)
   mtx_lock(&wk->mtx);
   settings_free(&wk->set);
   wk->set = s;
+  wk->frozen = 1;
+  if (s.opt[NL_OPT_SANDBOX]) wk->sandbox = 1;
   mtx_unlock(&wk->mtx);
+  return 1;
+}
+
+/* Whether the workers' settings are fixed (nl_setoption, lj_nlstate.c). */
+int lj_nl_workersfrozen(NLState *ns)
+{
+  NLWorkers *wk = ns->wk;
+  int f;
+  if (!wk) return 0;
+  mtx_lock(&wk->mtx);
+  f = wk->frozen;
+  mtx_unlock(&wk->mtx);
+  return f;
+}
+
+/* NL_OPT_SANDBOX was turned on in the main state: every worker, running
+** or not yet started, applies it before it loads anything more.
+*/
+void lj_nl_workerssandbox(NLState *ns)
+{
+  NLWorkers *wk = ns->wk;
+  if (!wk) return;
+  mtx_lock(&wk->mtx);
+  wk->sandbox = 1;
+  wk->set.opt[NL_OPT_SANDBOX] = 1;
+  mtx_unlock(&wk->mtx);
+}
+
+/* In a worker: applies the sandbox when the main state has turned it on
+** since the worker last looked. Called before each step, each job and each
+** message, so that no file loads unsandboxed after the main state's
+** nl_setoption has returned.
+*/
+static void worker_syncsandbox(NLWorker *w)
+{
+  NLState *ns;
+  int on;
+  if (!w->L) return;
+  ns = nl_state(w->L);
+  if (ns->opt[NL_OPT_SANDBOX]) return;
+  mtx_lock(&w->wk->mtx);
+  on = w->wk->sandbox;
+  mtx_unlock(&w->wk->mtx);
+  if (on) {
+    ns->opt[NL_OPT_SANDBOX] = 1;
+    ns->declnpath = ns->npath;  /* As nl_setoption does (lj_nlstate.c). */
+  }
+}
+
+/* Counts delta bytes (the transfer encoder's buffer) toward the memory
+** limit of the worker that L is. 0 when that would exceed it (the worker is
+** then discarded, as for its own allocations); always 1 outside workers.
+*/
+int lj_nl_memcharge(lua_State *L, ptrdiff_t delta)
+{
+  NLWorker *w = nl_state(L)->worker;
+  if (!w) return 1;
+  if (delta < 0) {
+    size_t d = (size_t)(-delta);
+    w->mem -= d <= w->mem ? d : w->mem;
+    return 1;
+  }
+  if (w->limit && w->mem + (size_t)delta > w->limit) {
+    w->overlimit = 1;
+    return 0;
+  }
+  w->mem += (size_t)delta;
   return 1;
 }
 
@@ -644,10 +765,25 @@ static void worker_open(NLWorker *w)
     snprintf(full, sizeof(full), "the worker-init function failed: %s", msg);
     worker_setfailure(w, full);
   }
-  if (lua_cpcall(L, start_f, w) != 0) {
+  worker_syncsandbox(w);
+  if (!w->overlimit && lua_cpcall(L, start_f, w) != 0) {
     pop_message(L, msg, sizeof(msg));
     w->broken = 1;
     worker_setfailure(w, msg);
+  }
+  if (w->overlimit) {
+    /* Over the limit while it opened, the init function or its start
+    ** included: the worker stays as it is, failing every request, rather
+    ** than being replaced by one that fails the same way.
+    */
+    snprintf(msg, sizeof(msg), "the memory limit of a worker (NL_OPT_WORKERMEM, "
+	     "%llu bytes) is too small for its libraries, the worker-init "
+	     "function and its start",
+	     (unsigned long long)w->limit);
+    w->broken = 1;
+    w->overlimit = 0;
+    free(w->failure);
+    w->failure = str_dup(msg);
   }
 }
 
@@ -809,6 +945,7 @@ static int worker_step(NLWorker *w)
   mtx_lock(&wk->mtx);
   w->wake = 0;
   mtx_unlock(&wk->mtx);
+  worker_syncsandbox(w);
   if (nl_pump(L) > 0) progress = 1;
   if (!w->broken) {
     st = lua_cpcall(L, step_f, &sc);
@@ -839,6 +976,7 @@ static int worker_step(NLWorker *w)
       } else {
 	JobCtx jc;
 	jc.r = r;
+	worker_syncsandbox(w);
 	st = lua_cpcall(L, job_f, &jc);
 	if (st != 0) {
 	  pop_message(L, msg, sizeof(msg));
@@ -957,10 +1095,27 @@ static int worker_after(NLWorker *w)
     w->L = worker_newstate(w);
     if (w->L) return 0;
   }
-  mtx_lock(&wk->mtx);
-  w->closed = 1;
-  if (w->kind == W_DEDICATED) wk->ndedicated--; else wk->npoolalive--;
-  mtx_unlock(&wk->mtx);
+  {
+    NLReq *q = NULL;
+    mtx_lock(&wk->mtx);
+    w->closed = 1;
+    if (w->kind == W_DEDICATED) {
+      wk->ndedicated--;
+    } else if (--wk->npoolalive == 0 && !wk->closing) {
+      /* No pool worker is left to run what is queued: it fails. */
+      q = wk->qhead;
+      wk->qhead = wk->qtail = NULL;
+      wk->qlen = 0;
+    }
+    mtx_unlock(&wk->mtx);
+    while (q) {
+      NLReq *n = q->next;
+      reply_post(q->reply, q->id, RES_WORKERERROR, NULL,
+		 "no pool worker is left: the last one could not be replaced");
+      req_free(q);
+      q = n;
+    }
+  }
   return 1;
 }
 
@@ -1071,15 +1226,20 @@ static int pool_start(lua_State *L, NLWorkers *wk)
   if (!wk->threads || n < 1) n = 1;
   for (i = 0; i < n; i++) {
     NLWorker *w = worker_new(wk, W_POOL);
-    if (!w || !worker_launch(wk, w)) return i > 0;
+    if (!w || !worker_launch(wk, w)) break;
   }
-  return 1;
+  return i > 0;
 }
 
-/* Joins the threads of the workers that have ended. On the main thread. */
+static void worker_free(NLWorker *w);
+
+/* Joins the threads of the workers that have ended, and frees the dedicated
+** workers that have ended and that no handle names any more (their
+** records would otherwise pile up until lua_close). On the main thread.
+*/
 static void workers_reap(NLWorkers *wk)
 {
-  NLWorker *w;
+  NLWorker *w, **pp;
   for (;;) {
     NLWorker *found = NULL;
     mtx_lock(&wk->mtx);
@@ -1092,6 +1252,25 @@ static void workers_reap(NLWorkers *wk)
     mtx_unlock(&wk->mtx);
     if (!found) break;
     thread_join(found->thread);
+  }
+  for (;;) {
+    NLWorker *found = NULL;
+    mtx_lock(&wk->mtx);
+    for (pp = &wk->workers; *pp; pp = &(*pp)->next) {
+      w = *pp;
+      if (w->kind == W_DEDICATED && w->closed && w->hrefs == 0 &&
+	  (!w->threaded || w->joined)) {
+	NLWorker *c;
+	*pp = w->next;
+	for (c = wk->workers; c; c = c->next)
+	  if (c->parent == w) c->parent = NULL;
+	found = w;
+	break;
+      }
+    }
+    mtx_unlock(&wk->mtx);
+    if (!found) break;
+    worker_free(found);
   }
 }
 
@@ -1138,6 +1317,7 @@ int lj_nl_stepworkers(lua_State *L)
   }
   ns->wpumping = 0;
   free(list);
+  workers_reap(wk);
   return progress;
 }
 
@@ -1283,6 +1463,7 @@ static void env_deliver(lua_State *L, void *data)
     e->msg = NULL;
     env_free(e);
     running_add(w, r);
+    worker_syncsandbox(w);
     lj_nl_pushrt(L, "workerin");
     lua_pushliteral(L, "call");
     lua_pushlightuserdata(L, r);
@@ -1301,6 +1482,7 @@ static void env_deliver(lua_State *L, void *data)
       stop = w->stop;
       mtx_unlock(&w->wk->mtx);
       if (stop || w->broken) { lj_nl_msgfree(m); break; }
+      worker_syncsandbox(w);
     }
     lj_nl_pushrt(L, "workerin");
     lua_pushliteral(L, "emit");
@@ -1325,6 +1507,7 @@ static void env_deliver(lua_State *L, void *data)
 
 #define MSGBOX_MT	"nl.worker.msg"
 #define PORTBOX_MT	"nl.worker.port"
+#define WORKERBOX_MT	"nl.worker.handle"
 
 typedef struct MsgBox { NLMsg *m; } MsgBox;
 typedef struct PortBox { NLPort *p; } PortBox;
@@ -1334,6 +1517,39 @@ static int msgbox_gc(lua_State *L)
   MsgBox *b = (MsgBox *)luaL_checkudata(L, 1, MSGBOX_MT);
   if (b->m) { lj_nl_msgfree(b->m); b->m = NULL; }
   return 0;
+}
+
+/* The handle of a dedicated worker holds the record alive (hrefs): a
+** handle to a worker that has ended reads its `closed`, never freed memory.
+*/
+typedef struct WorkerBox { NLWorker *w; } WorkerBox;
+
+static int workerbox_gc(lua_State *L)
+{
+  WorkerBox *b = (WorkerBox *)luaL_checkudata(L, 1, WORKERBOX_MT);
+  if (b->w) {
+    NLWorkers *wk = b->w->wk;
+    mtx_lock(&wk->mtx);
+    b->w->hrefs--;
+    mtx_unlock(&wk->mtx);
+    b->w = NULL;
+  }
+  return 0;
+}
+
+static void push_workerbox(lua_State *L, NLWorker *w)
+{
+  WorkerBox *b = (WorkerBox *)lua_newuserdata(L, sizeof(WorkerBox));
+  b->w = NULL;
+  if (luaL_newmetatable(L, WORKERBOX_MT)) {
+    lua_pushcfunction(L, workerbox_gc);
+    lua_setfield(L, -2, "__gc");
+  }
+  lua_setmetatable(L, -2);
+  mtx_lock(&w->wk->mtx);
+  w->hrefs++;
+  mtx_unlock(&w->wk->mtx);
+  b->w = w;
 }
 
 static int portbox_gc(lua_State *L)
@@ -1449,6 +1665,18 @@ static int hw_spawn(lua_State *L)
     lua_pushliteral(L, "the worker pool could not start (out of memory or threads)");
     return 2;
   }
+  {
+    int alive;
+    mtx_lock(&wk->mtx);
+    alive = wk->npoolalive;
+    mtx_unlock(&wk->mtx);
+    if (alive == 0) {
+      req_free(r);
+      lua_pushnil(L);
+      lua_pushliteral(L, "no pool worker is alive: none could start or be replaced");
+      return 2;
+    }
+  }
   ns->outstanding++;
   queue_push(wk, r);
   lua_pushboolean(L, 1);
@@ -1509,21 +1737,27 @@ static int hw_new(lua_State *L)
     worker_free(w);
     return luaL_error(L, "not enough memory");
   }
+  /* The handle first: a worker with no handle may be freed once it ends. */
+  mtx_lock(&wk->mtx);
+  w->hrefs++;
+  mtx_unlock(&wk->mtx);
   if (!worker_launch(wk, w)) {
     lua_pushnil(L);
     lua_pushliteral(L, "a worker could not start (no thread)");
     return 2;
   }
-  lua_pushlightuserdata(L, w);
+  push_workerbox(L, w);
+  mtx_lock(&wk->mtx);
+  w->hrefs--;
+  mtx_unlock(&wk->mtx);
   return 1;
 }
 
 static NLWorker *check_worker(lua_State *L, int idx)
 {
-  NLWorker *w = (NLWorker *)lua_touserdata(L, idx);
-  if (!w || lua_type(L, idx) != LUA_TLIGHTUSERDATA)
-    luaL_argerror(L, idx, "a worker");
-  return w;
+  WorkerBox *b = (WorkerBox *)luaL_checkudata(L, idx, WORKERBOX_MT);
+  if (!b->w) luaL_argerror(L, idx, "a worker");
+  return b->w;
 }
 
 /* Posts envelope e to worker w: 0 when w has ended. Under no lock: w->port
@@ -1583,13 +1817,14 @@ static int hw_emit(lua_State *L)
   NLEnv *e;
   NLMsg *m;
   int ok;
-  if (lua_type(L, 1) != LUA_TLIGHTUSERDATA) luaL_checkudata(L, 1, PORTBOX_MT);
+  int toworker = luaL_testudata(L, 1, WORKERBOX_MT) != NULL;
+  if (!toworker) luaL_checkudata(L, 1, PORTBOX_MT);
   m = lj_nl_encode(L, 3, n, 2);
   e = (NLEnv *)calloc(1, sizeof(NLEnv));
   if (!e) { lj_nl_msgfree(m); return luaL_error(L, "not enough memory"); }
   e->kind = ENV_EMIT;
   e->msg = m;
-  if (lua_type(L, 1) == LUA_TLIGHTUSERDATA) {
+  if (toworker) {
     ok = post_to_worker(check_worker(L, 1), e);
   } else {
     PortBox *b = (PortBox *)lua_touserdata(L, 1);
@@ -1767,25 +2002,16 @@ LUA_API void nl_setworkers(lua_State *L, int n)
 {
   NLState *ns = nl_state(L);
   NLWorkers *wk;
-  int grow = 0, i, now;
+  int now;
   if (ns->worker) return;  /* No effect in a worker (API.md 2.10). */
   wk = workers_get(L);
   if (!wk) return;
   if (n < 0) n = 0;
   mtx_lock(&wk->mtx);
-  if (!wk->started) {
-    wk->npool = n;
-  } else if (wk->threads && n > pool_size(wk)) {
-    /* A threaded pool grows; it does not shrink, nor change mode. */
-    grow = n - pool_size(wk);
-    wk->npool = n;
-  }
+  /* Fixed once workers exist (API.md 2.10). */
+  if (!wk->frozen) wk->npool = n;
   now = pool_size(wk);
   mtx_unlock(&wk->mtx);
-  for (i = 0; i < grow; i++) {
-    NLWorker *w = worker_new(wk, W_POOL);
-    if (!w || !worker_launch(wk, w)) break;
-  }
   if (lj_nl_isopen(L) && lua_checkstack(L, 4)) {
     int st = lj_nl_protect(L, count_f, (void *)(intptr_t)now, 0, 0);
     if (st > 0) lua_pop(L, 1);
@@ -1800,8 +2026,10 @@ LUA_API void nl_setworkerinit(lua_State *L, lua_CFunction fn, void *data)
   wk = workers_get(L);
   if (!wk) return;
   mtx_lock(&wk->mtx);
-  wk->init = fn;
-  wk->initdata = fn ? data : NULL;
+  if (!wk->frozen) {  /* Fixed once workers exist (API.md 2.10). */
+    wk->init = fn;
+    wk->initdata = fn ? data : NULL;
+  }
   mtx_unlock(&wk->mtx);
 }
 
