@@ -618,6 +618,9 @@ void lj_nl_openhost(lua_State *L)
   /* The VM extensions: host.vm.markmethod, host.vm.ismethod. */
   lj_nl_pushhostvm(L);
   lua_setfield(L, -2, "vm");
+  /* Workers and the transfer encoder (lj_nlworker.c). */
+  lj_nl_pushhostworker(L);
+  lua_setfield(L, -2, "worker");
   /* The text and regex libraries of libnlc, when it has them; without
   ** them the runtime keeps its Lua stand-ins (runtime/nl_80_string.lua).
   */

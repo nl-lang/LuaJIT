@@ -39,6 +39,7 @@ static int sync_init(NLState *ns)
 {
   InitializeSRWLock(&ns->mtx);
   InitializeConditionVariable(&ns->idle);
+  InitializeConditionVariable(&ns->posted);
   return 0;
 }
 static void sync_destroy(NLState *ns) { UNUSED(ns); }
@@ -49,6 +50,7 @@ static void idle_wait(NLState *ns)
   SleepConditionVariableSRW(&ns->idle, &ns->mtx, INFINITE, 0);
 }
 static void idle_signal(NLState *ns) { WakeAllConditionVariable(&ns->idle); }
+static void posted_signal(NLState *ns) { WakeAllConditionVariable(&ns->posted); }
 #else
 static int sync_init(NLState *ns)
 {
@@ -57,10 +59,16 @@ static int sync_init(NLState *ns)
     pthread_mutex_destroy(&ns->mtx);
     return -1;
   }
+  if (pthread_cond_init(&ns->posted, NULL) != 0) {
+    pthread_cond_destroy(&ns->idle);
+    pthread_mutex_destroy(&ns->mtx);
+    return -1;
+  }
   return 0;
 }
 static void sync_destroy(NLState *ns)
 {
+  pthread_cond_destroy(&ns->posted);
   pthread_cond_destroy(&ns->idle);
   pthread_mutex_destroy(&ns->mtx);
 }
@@ -68,6 +76,7 @@ void lj_nl_lock(NLState *ns) { pthread_mutex_lock(&ns->mtx); }
 void lj_nl_unlock(NLState *ns) { pthread_mutex_unlock(&ns->mtx); }
 static void idle_wait(NLState *ns) { pthread_cond_wait(&ns->idle, &ns->mtx); }
 static void idle_signal(NLState *ns) { pthread_cond_broadcast(&ns->idle); }
+static void posted_signal(NLState *ns) { pthread_cond_broadcast(&ns->posted); }
 #endif
 
 /* -- String lists -------------------------------------------------------- */
@@ -219,6 +228,16 @@ void lj_nl_freestate(global_State *g)
   NLState *ns = (NLState *)g->nl;
   NLPost *p;
   if (!ns) return;
+  /* The workers a main state started stop first, and their threads are
+  ** joined (lj_nlworker.c): nothing posts to this state after that. Then
+  ** this state's port takes no more results.
+  */
+  lj_nl_closeworkers(ns);
+  if (ns->port) {
+    lj_nl_portkill(ns->port);
+    lj_nl_portunref(ns->port);
+    ns->port = NULL;
+  }
   /* A callback still queued when the state closes is called once with
   ** L == NULL, so that it can free its data. One that posts
   ** again from there gets its post called with NULL too: the inbox is
@@ -266,6 +285,7 @@ LUA_API int nl_post(lua_State *L, nl_Callback fn, void *data)
   wakeup = wasempty ? ns->wakeup : NULL;
   wakeupdata = ns->wakeupdata;
   if (wakeup) ns->wakeup_calls++;
+  if (ns->drain_waiting) posted_signal(ns);  /* nl_drain (lj_nlworker.c). */
   lj_nl_unlock(ns);
   if (wakeup) {
     /* Called outside the lock, so that it may post. nl_setwakeup waits
@@ -343,6 +363,11 @@ LUA_API int nl_pump(lua_State *L)
     n++;
     p = next;
   }
+  /* The workers that have no thread of their own run a step here, on the
+  ** main state's thread (lj_nlworker.c). What they send back
+  ** arrives at the next pump.
+  */
+  if (ns->wk && !ns->worker && lj_nl_stepworkers(L)) n++;
   /* Then what the runtime has queued (runtime/nl.lua, rt.pump): results of
   ** the spawn stand-in, reports of unhandled failures, including those of
   ** the callbacks just run.
@@ -355,6 +380,10 @@ LUA_API int nl_pump(lua_State *L)
 LUA_API int nl_setoption(lua_State *L, int opt, lua_Integer value)
 {
   NLState *ns = nl_state(L);
+  /* Options are set on the main state; a worker has a copy, and
+  ** setting one there has no effect.
+  */
+  if (ns->worker) return 0;
   switch (opt) {
   case NL_OPT_CHECKS: case NL_OPT_STRIP: case NL_OPT_GLUA:
     if (value != 0 && value != 1) return 0;
@@ -377,7 +406,7 @@ LUA_API int nl_setoption(lua_State *L, int opt, lua_Integer value)
     if (value < 0 || value > 2) return 0;
     break;
   case NL_OPT_MAXWORKERS: case NL_OPT_WORKERMEM:
-    /* Stored for nl_getoption. Workers do not exist before M10. */
+    /* Read when a worker starts (lj_nlworker.c). */
     if (value < 0) return 0;
     break;
   default:
@@ -400,17 +429,12 @@ int lj_nl_glua(lua_State *L)
   return nl_state(L)->opt[NL_OPT_GLUA] != 0;
 }
 
-LUA_API int nl_isworker(lua_State *L)
-{
-  UNUSED(L);
-  return 0;  /* No workers before M10. */
-}
-
 /* -- Loader and reporter ------------------------------------------------- */
 
 LUA_API void nl_setloader(lua_State *L, const nl_Loader *loader)
 {
   NLState *ns = nl_state(L);
+  if (ns->worker) return;  /* No effect in a worker. */
   if (loader && loader->resolve && loader->read) {
     ns->loader = *loader;
     ns->hasloader = 1;
@@ -423,6 +447,7 @@ LUA_API void nl_setloader(lua_State *L, const nl_Loader *loader)
 LUA_API void nl_setreporter(lua_State *L, nl_Reporter fn, void *data)
 {
   NLState *ns = nl_state(L);
+  if (ns->worker) return;  /* No effect in a worker. */
   ns->reporter = fn;
   ns->reporterdata = fn ? data : NULL;
 }
