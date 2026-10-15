@@ -548,6 +548,11 @@ void lj_nl_workerssandbox(NLState *ns)
   NLWorkers *wk = ns->wk;
   if (!wk) return;
   mtx_lock(&wk->mtx);
+  /* As nl_setoption does for a state (lj_nlstate.c): the directories that
+  ** feed declaration files in the sandbox are those added before it, here
+  ** every one the workers copy.
+  */
+  if (!wk->set.opt[NL_OPT_SANDBOX]) wk->set.declnpath = wk->set.npath;
   wk->sandbox = 1;
   wk->set.opt[NL_OPT_SANDBOX] = 1;
   mtx_unlock(&wk->mtx);
@@ -555,8 +560,11 @@ void lj_nl_workerssandbox(NLState *ns)
 
 /* In a worker: applies the sandbox when the main state has turned it on
 ** since the worker last looked. Called before each step, each job and each
-** message, so that no file loads unsandboxed after the main state's
-** nl_setoption has returned.
+** message, so that a job, a call or an event that arrives after the main
+** state's nl_setoption has returned loads its files sandboxed. A step that
+** was already running when the option went on can still load a file
+** unsandboxed before it ends: a result that it decodes later in that step
+** may name a file this worker lacks.
 */
 static void worker_syncsandbox(NLWorker *w)
 {
@@ -628,12 +636,26 @@ static void worker_wakeup(void *data)
 /* A new state for w, with the settings copied from the main state. NULL when
 ** out of memory.
 */
+/* For tests only (tests/vm/real/test_workers.c, finding 15 of the review):
+** when 0 or more, how many more worker states may be made; the next one
+** fails as if out of memory. -1, the default, is no limit. Read and written
+** under the workers' lock.
+*/
+int lj_nl_test_workerstates = -1;
+
 static lua_State *worker_newstate(NLWorker *w)
 {
   NLWorkers *wk = w->wk;
-  lua_State *L = luaL_newstate();
+  lua_State *L;
   NLState *ns;
   size_t i;
+  int refuse = 0;
+  mtx_lock(&wk->mtx);
+  if (lj_nl_test_workerstates == 0) refuse = 1;
+  else if (lj_nl_test_workerstates > 0) lj_nl_test_workerstates--;
+  mtx_unlock(&wk->mtx);
+  if (refuse) return NULL;
+  L = luaL_newstate();
   if (!L) return NULL;
   ns = nl_state(L);
   ns->wk = wk;
@@ -880,9 +902,16 @@ static void queue_signal(NLWorkers *wk, NLReq *r)
   }
 }
 
-static void queue_push(NLWorkers *wk, NLReq *r)
+/* Queues job r; 0 (r not queued) when no pool worker is alive to run it,
+** decided in the same critical section that queues it.
+*/
+static int queue_push(NLWorkers *wk, NLReq *r)
 {
   mtx_lock(&wk->mtx);
+  if (wk->npoolalive == 0) {
+    mtx_unlock(&wk->mtx);
+    return 0;
+  }
   r->next = NULL;
   r->prev = wk->qtail;
   if (wk->qtail) wk->qtail->next = r; else wk->qhead = r;
@@ -890,6 +919,7 @@ static void queue_push(NLWorkers *wk, NLReq *r)
   wk->qlen++;
   queue_signal(wk, r);
   mtx_unlock(&wk->mtx);
+  return 1;
 }
 
 /* How far into the queue a worker looks for a job of a file it has, and
@@ -1536,7 +1566,10 @@ static int workerbox_gc(lua_State *L)
   return 0;
 }
 
-static void push_workerbox(lua_State *L, NLWorker *w)
+/* An empty handle box: made before the worker, so that running out of
+** memory while it is made leaves no count behind.
+*/
+static void push_workerbox(lua_State *L)
 {
   WorkerBox *b = (WorkerBox *)lua_newuserdata(L, sizeof(WorkerBox));
   b->w = NULL;
@@ -1545,10 +1578,6 @@ static void push_workerbox(lua_State *L, NLWorker *w)
     lua_setfield(L, -2, "__gc");
   }
   lua_setmetatable(L, -2);
-  mtx_lock(&w->wk->mtx);
-  w->hrefs++;
-  mtx_unlock(&w->wk->mtx);
-  b->w = w;
 }
 
 static int portbox_gc(lua_State *L)
@@ -1664,20 +1693,13 @@ static int hw_spawn(lua_State *L)
     lua_pushliteral(L, "the worker pool could not start (out of memory or threads)");
     return 2;
   }
-  {
-    int alive;
-    mtx_lock(&wk->mtx);
-    alive = wk->npoolalive;
-    mtx_unlock(&wk->mtx);
-    if (alive == 0) {
-      req_free(r);
-      lua_pushnil(L);
-      lua_pushliteral(L, "no pool worker is alive: none could start or be replaced");
-      return 2;
-    }
+  if (!queue_push(wk, r)) {
+    req_free(r);
+    lua_pushnil(L);
+    lua_pushliteral(L, "no pool worker is alive: none could start or be replaced");
+    return 2;
   }
   ns->outstanding++;
-  queue_push(wk, r);
   lua_pushboolean(L, 1);
   return 1;
 }
@@ -1693,9 +1715,12 @@ static int hw_new(lua_State *L)
   NLWorkers *wk = workers_get(L);
   NLPort *port = state_port(L);
   NLWorker *w;
+  WorkerBox *box;
   lua_Integer max;
-  int nded;
+  int nded, boxidx;
   if (!wk || !port) return luaL_error(L, "not enough memory");
+  push_workerbox(L);
+  boxidx = lua_gettop(L);
   if (!settings_snapshot(L, wk)) return luaL_error(L, "not enough memory");
   workers_mode(wk);
   if (!ns->worker) workers_reap(wk);
@@ -1719,6 +1744,7 @@ static int hw_new(lua_State *L)
     lua_pushliteral(L, "a worker could not start (out of memory)");
     return 2;
   }
+  box = (WorkerBox *)lua_touserdata(L, boxidx);
   w->from = str_dup(from);
   w->path = str_dup(path);
   w->parentport = port;
@@ -1736,19 +1762,20 @@ static int hw_new(lua_State *L)
     worker_free(w);
     return luaL_error(L, "not enough memory");
   }
-  /* The handle first: a worker with no handle may be freed once it ends. */
+  /* The handle names it before it runs: a worker with no handle may be
+  ** freed once it ends.
+  */
   mtx_lock(&wk->mtx);
   w->hrefs++;
   mtx_unlock(&wk->mtx);
-  if (!worker_launch(wk, w)) {
+  box->w = w;
+  if (!worker_launch(wk, w)) {  /* w is freed. */
+    box->w = NULL;
     lua_pushnil(L);
     lua_pushliteral(L, "a worker could not start (no thread)");
     return 2;
   }
-  push_workerbox(L, w);
-  mtx_lock(&wk->mtx);
-  w->hrefs--;
-  mtx_unlock(&wk->mtx);
+  lua_pushvalue(L, boxidx);
   return 1;
 }
 
@@ -1935,6 +1962,14 @@ static int hw_parent(lua_State *L)
   return 1;
 }
 
+/* worker.isself(port box) -> boolean: the port is this state's own. */
+static int hw_isself(lua_State *L)
+{
+  PortBox *b = (PortBox *)luaL_checkudata(L, 1, PORTBOX_MT);
+  lua_pushboolean(L, b->p != NULL && b->p == nl_state(L)->port);
+  return 1;
+}
+
 /* worker.loaded(name): this pool worker has loaded the file (the pool
 ** prefers it for the file's jobs).
 */
@@ -1976,7 +2011,8 @@ void lj_nl_pushhostworker(lua_State *L)
     {"emit", hw_emit}, {"stop", hw_stop}, {"reply", hw_reply},
     {"replyerror", hw_replyerror}, {"decode", hw_decode},
     {"encode", hw_encode}, {"msgsize", hw_msgsize}, {"parent", hw_parent},
-    {"loaded", hw_loaded}, {"memory", hw_memory}, {NULL, NULL}
+    {"loaded", hw_loaded}, {"memory", hw_memory}, {"isself", hw_isself},
+    {NULL, NULL}
   };
   const luaL_Reg *r;
   lua_createtable(L, 0, 16);
@@ -2063,6 +2099,15 @@ LUA_API void nl_spawn(lua_State *L, int nargs)
 LUA_API int nl_isworker(lua_State *L)
 {
   return nl_state(L)->worker != NULL;
+}
+
+/* 1 when the workers' settings are fixed for L: L is a worker, or L is a
+** main state whose pool has started or that has made a dedicated worker.
+*/
+LUA_API int nl_workersstarted(lua_State *L)
+{
+  NLState *ns = nl_state(L);
+  return ns->worker != NULL || lj_nl_workersfrozen(ns);
 }
 
 /* Waits until the inbox of ns is not empty, at most `seconds` (forever when

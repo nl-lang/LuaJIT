@@ -212,6 +212,22 @@ static void enc_nomem(lua_State *L)
   luaL_error(L, "not enough memory");
 }
 
+/* Counts delta bytes of the encoder's own memory (the buffer and its
+** bookkeeping: the seen table, the objects, the classes, the frames) toward
+** the memory limit of the worker it runs in; raises when that is over.
+*/
+static void enc_charge(lua_State *L, Enc *e, ptrdiff_t delta)
+{
+  if (delta > 0) {
+    if (!lj_nl_memcharge(L, delta)) enc_nomem(L);
+    e->charged += (size_t)delta;
+  } else if (delta < 0) {
+    size_t d = (size_t)(-delta);
+    lj_nl_memcharge(L, delta);
+    e->charged -= d <= e->charged ? d : e->charged;
+  }
+}
+
 /* Room for `more` bytes in the message. In a worker the growth counts
 ** toward its memory limit.
 */
@@ -226,8 +242,7 @@ static void enc_need(lua_State *L, Enc *e, size_t more)
     if (cap > ((size_t)-1) / 2) enc_nomem(L);
     cap *= 2;
   }
-  if (!lj_nl_memcharge(L, (ptrdiff_t)(cap - e->cap))) enc_nomem(L);
-  e->charged += cap - e->cap;
+  enc_charge(L, e, (ptrdiff_t)(cap - e->cap));
   p = (char *)realloc(e->buf, cap);
   if (!p) enc_nomem(L);
   e->buf = p;
@@ -246,13 +261,14 @@ static LJ_AINLINE void enc_u32(Enc *e, uint32_t v)
 }
 
 /* A slot of a growable array: grows *p (of *sz elements) to hold n+1. */
-static void *enc_slot(lua_State *L, void **p, uint32_t n, uint32_t *sz,
-		      size_t esize)
+static void *enc_slot(lua_State *L, Enc *e, void **p, uint32_t n,
+		      uint32_t *sz, size_t esize)
 {
   if (n >= *sz) {
     uint32_t nsz = *sz ? *sz * 2 : 8;
     void *np;
     if (nsz < *sz) enc_nomem(L);
+    enc_charge(L, e, (ptrdiff_t)((size_t)(nsz - *sz) * esize));
     np = realloc(*p, (size_t)nsz * esize);
     if (!np) enc_nomem(L);
     *p = np;
@@ -285,8 +301,12 @@ static void seen_put(lua_State *L, Enc *e, const void *p, uint32_t id)
   uint32_t i;
   if (!e->skeys || (e->scount + 1) * 4 > (e->smask + 1) * 3) {
     uint32_t nsize = e->skeys ? (e->smask + 1) * 2 : 64, j;
-    uintptr_t *nk = (uintptr_t *)calloc(nsize, sizeof(uintptr_t));
-    uint32_t *nv = (uint32_t *)malloc(nsize * sizeof(uint32_t));
+    uintptr_t *nk;
+    uint32_t *nv;
+    enc_charge(L, e, (ptrdiff_t)((size_t)(nsize - (e->skeys ? e->smask + 1 : 0)) *
+				 (sizeof(uintptr_t) + sizeof(uint32_t))));
+    nk = (uintptr_t *)calloc(nsize, sizeof(uintptr_t));
+    nv = (uint32_t *)malloc(nsize * sizeof(uint32_t));
     if (!nk || !nv || nsize == 0) { free(nk); free(nv); enc_nomem(L); }
     if (e->skeys) {
       for (j = 0; j <= e->smask; j++) {
@@ -334,7 +354,7 @@ static uint32_t file_index(lua_State *L, Enc *e, GCstr *file)
   GCstr **slot;
   for (i = 0; i < e->nfiles; i++)
     if (e->files[i] == file) return i;
-  slot = (GCstr **)enc_slot(L, (void **)&e->files, e->nfiles, &e->szfiles,
+  slot = (GCstr **)enc_slot(L, e, (void **)&e->files, e->nfiles, &e->szfiles,
 			    sizeof(GCstr *));
   *slot = file;
   return e->nfiles++;
@@ -350,7 +370,7 @@ static uint32_t ref_index(lua_State *L, Enc *e, int kind, GCstr *file,
     if (e->refs[i].kind == kind && e->refs[i].file == fi &&
 	e->refs[i].name == name)
       return i;
-  r = (ERef *)enc_slot(L, (void **)&e->refs, e->nrefs, &e->szrefs,
+  r = (ERef *)enc_slot(L, e, (void **)&e->refs, e->nrefs, &e->szrefs,
 		       sizeof(ERef));
   r->kind = (uint8_t)kind;
   r->file = fi;
@@ -420,7 +440,10 @@ static EClass *cls_add(lua_State *L, Enc *e, GCtab *mt, int isud)
   uint32_t i;
   if (!e->cls || (e->ncls + 1) * 2 > e->clsmask + 1) {
     uint32_t nsize = e->cls ? (e->clsmask + 1) * 2 : 16, j;
-    EClass *nc = (EClass *)calloc(nsize, sizeof(EClass));
+    EClass *nc;
+    enc_charge(L, e, (ptrdiff_t)((size_t)(nsize - (e->cls ? e->clsmask + 1 : 0)) *
+				 sizeof(EClass)));
+    nc = (EClass *)calloc(nsize, sizeof(EClass));
     if (!nc) enc_nomem(L);
     if (e->cls) {
       for (j = 0; j <= e->clsmask; j++) {
@@ -507,7 +530,7 @@ static void enc_failclass(lua_State *L, Enc *e, EClass *c)
 static void enc_pushframe(lua_State *L, Enc *e, GCtab *t, uint32_t hostid,
 			  uint32_t hostanchor)
 {
-  EFrame *f = (EFrame *)enc_slot(L, (void **)&e->fr, e->nfr, &e->szfr,
+  EFrame *f = (EFrame *)enc_slot(L, e, (void **)&e->fr, e->nfr, &e->szfr,
 				 sizeof(EFrame));
   memset(f, 0, sizeof(*f));
   f->t = t;
@@ -579,6 +602,8 @@ static uint32_t enc_newobj(lua_State *L, Enc *e, cTValue *o)
     size_t *na;
     TValue *nt;
     if (nsz < e->szobj) enc_nomem(L);
+    enc_charge(L, e, (ptrdiff_t)((size_t)(nsz - e->szobj) *
+				 (sizeof(size_t) + sizeof(TValue))));
     na = (size_t *)realloc(e->objat, (size_t)nsz * sizeof(size_t));
     if (!na) enc_nomem(L);
     e->objat = na;
@@ -801,7 +826,7 @@ static void enc_put(lua_State *L, Enc *e, cTValue *o)
       seen_put(L, e, ud, id);
       enc_byte(e, TT_HOST);
       enc_u32(e, c->ref);
-      slot = (uint32_t *)enc_slot(L, (void **)&e->hostopen, e->nhostopen,
+      slot = (uint32_t *)enc_slot(L, e, (void **)&e->hostopen, e->nhostopen,
 				  &e->szhostopen, sizeof(uint32_t));
       *slot = id;
       e->nhostopen++;

@@ -45,6 +45,11 @@ LUALIB_API int luaopen_nl(lua_State *L);			/* [-0, +0, e] */
 LUA_API int nl_setoption(lua_State *L, int opt, lua_Integer value); /* [-0, +0, -] */
 LUA_API lua_Integer nl_getoption(lua_State *L, int opt);	/* [-0, +0, -] */
 LUA_API int nl_isworker(lua_State *L);				/* [-0, +0, -] */
+/* 1 when the workers' settings are fixed for L (L is a worker, or a main
+** state with workers): nl_setloader then has no effect, nor nl_addpath and
+** nl_adddecl on a main state (2.10).
+*/
+LUA_API int nl_workersstarted(lua_State *L);			/* [-0, +0, -] */
 LUA_API void nl_sandboxenv(lua_State *L);			/* [-0, +1, m] */
 
 /* -- Loading ------------------------------------------------------------- */
@@ -53,6 +58,9 @@ LUA_API int nl_loadbuffer(lua_State *L, const char *buf, size_t size,
 			  const char *name);			/* [-0, +1, m] */
 LUA_API int nl_loadfile(lua_State *L, const char *filename);	/* [-0, +1, m] */
 LUA_API void nl_import(lua_State *L, const char *path);	/* [-0, +1, e] */
+/* No effect on a main state whose workers started (nl_workersstarted(L) &&
+** !nl_isworker(L)); see the end of this file.
+*/
 LUA_API void nl_addpath(lua_State *L, const char *dir);	/* [-0, +0, m] */
 LUA_API void nl_adddecl(lua_State *L, const char *name);	/* [-0, +0, m] */
 
@@ -70,6 +78,7 @@ typedef struct nl_Loader {
   void (*release)(void *data, const char *name, const char *buf);
   void *data;
 } nl_Loader;
+/* No effect when nl_workersstarted(L), in a worker too. */
 LUA_API void nl_setloader(lua_State *L, const nl_Loader *loader); /* [-0, +0, -] */
 
 #define NL_DIAG_ERROR		0
@@ -85,6 +94,7 @@ typedef struct nl_Diagnostic {
   int endline, endcolumn;
 } nl_Diagnostic;
 typedef void (*nl_Reporter)(void *data, const nl_Diagnostic *d);
+/* No effect in a worker (nl_isworker(L)). */
 LUA_API void nl_setreporter(lua_State *L, nl_Reporter fn, void *data); /* [-0, +0, -] */
 
 /* -- Types and values ---------------------------------------------------- */
@@ -212,12 +222,14 @@ LUA_API void nl_setwakeup(lua_State *L, nl_Wakeup fn, void *data); /* [-0, +0, -
 
 /* The number of pool workers; 0 runs jobs and dedicated workers on the
 ** caller's thread while it pumps. The default is the hardware threads minus
-** one, at least one. Set before the first worker starts (below).
+** one, at least one. Set before the first worker starts (below): no effect
+** when nl_workersstarted(L).
 */
 LUA_API void nl_setworkers(lua_State *L, int n);		/* [-0, +0, -] */
 /* fn runs in every new worker state W as lua_cpcall(W, fn, data) does, on
 ** the worker's thread, before any NL file loads. An error fails the worker
-** with WorkerError. data is shared by all workers.
+** with WorkerError. data is shared by all workers. No effect when
+** nl_workersstarted(L).
 */
 LUA_API void nl_setworkerinit(lua_State *L, lua_CFunction fn,
 			      void *data);			/* [-0, +0, -] */
@@ -233,14 +245,19 @@ LUA_API void nl_spawn(lua_State *L, int nargs);	/* [-(nargs+1), +1, e] */
 
 /* nl_setworkers, nl_setworkerinit, nl_setloader, nl_addpath, nl_adddecl and
 ** the options are set on the main state, before the first worker starts (a
-** spawn, Worker.new, nl_spawn). From then on the workers' settings are fixed:
-** nl_setoption returns 0, except that NL_OPT_SANDBOX can still be turned on,
-** and every worker applies it before it loads anything more; the others
-** have no effect. In a worker none of them has an effect. A worker copies
-** the options, the loader, the search path and the declaration files when
-** it starts, but not the reporter. The loader's functions are then called
-** from worker threads too, so they must be safe to call from several
-** threads at once.
+** spawn, Worker.new, nl_spawn). From then on the workers' settings are fixed
+** (nl_workersstarted is 1): nl_setoption returns 0, except that
+** NL_OPT_SANDBOX can still be turned on, and every worker applies it before
+** it handles anything more; nl_setworkers, nl_setworkerinit, nl_setloader,
+** nl_addpath and nl_adddecl have no effect (they are void: a host that must
+** know tests nl_workersstarted first).
+** In a worker, nl_setoption returns 0 and nl_setworkers, nl_setworkerinit,
+** nl_setloader and nl_setreporter have no effect, while nl_addpath and
+** nl_adddecl widen that worker's own search (from its init function, for
+** instance). A worker copies the options, the loader, the search path and
+** the declaration files when it starts, but not the reporter. The loader's
+** functions are then called from worker threads too, so they must be safe
+** to call from several threads at once.
 */
 
 #ifdef __cplusplus
