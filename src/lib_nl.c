@@ -31,12 +31,26 @@ LUALIB_API int luaopen_nl(lua_State *L)
 		      "=[nl runtime]") != 0)
     lua_error(L);
   lj_nl_openhost(L);
+  if (ns->hostinit) {  /* The embedder's fields (nl_sethostinit). */
+    lua_pushcfunction(L, ns->hostinit);
+    lua_pushvalue(L, -2);
+    lua_call(L, 1, 1);
+    lua_insert(L, -3);  /* What to call with rt, below the chunk. */
+  }
   lua_call(L, 1, 1);
   if (!lua_istable(L, -1))
     luaL_error(L, "the NL runtime returned %s, not a table",
 	       luaL_typename(L, -1));
   lj_nl_openintr(L);  /* The intrinsic table of KINTR (M5), from rt. */
   ns->rtref = luaL_ref(L, LUA_REGISTRYINDEX);
+  if (ns->hostinit) {
+    if (lua_isfunction(L, -1)) {
+      lua_rawgeti(L, LUA_REGISTRYINDEX, ns->rtref);
+      lua_call(L, 1, 0);
+    } else {
+      lua_pop(L, 1);
+    }
+  }
   /* include(path) is loadfile and a call (IMPLEMENTATION_PLAN M4). The
   ** runtime may define its own; it is installed only when it did not.
   */

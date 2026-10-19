@@ -218,6 +218,7 @@ int lj_nl_newstate(global_State *g)
   ns->opt[NL_OPT_GLUA] = 0;
   ns->opt[NL_OPT_SANDBOX] = 0;
   ns->opt[NL_OPT_LOCALIZE] = 1;
+  ns->opt[NL_OPT_OPENLIBS] = 1;
   g->nl = ns;
   if (!path_init(ns)) return -1;  /* lj_nl_freestate cleans up. */
   return 0;
@@ -391,6 +392,7 @@ LUA_API int nl_setoption(lua_State *L, int opt, lua_Integer value)
   if (opt != NL_OPT_SANDBOX && lj_nl_workersfrozen(ns)) return 0;
   switch (opt) {
   case NL_OPT_CHECKS: case NL_OPT_STRIP: case NL_OPT_GLUA:
+  case NL_OPT_OPENLIBS:
     if (value != 0 && value != 1) return 0;
     break;
   case NL_OPT_SANDBOX:
@@ -430,6 +432,13 @@ LUA_API lua_Integer nl_getoption(lua_State *L, int opt)
   NLState *ns = nl_state(L);
   if (opt < 1 || opt > NL_OPT__MAX) return 0;
   return ns->opt[opt];
+}
+
+LUA_API void nl_sethostinit(lua_State *L, lua_CFunction fn)
+{
+  NLState *ns = nl_state(L);
+  if (ns->worker) return;
+  ns->hostinit = fn;
 }
 
 /* Read by lj_lex_setup: whether the chunks loaded from now on are GLua. */

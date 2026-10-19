@@ -589,6 +589,23 @@ static int host_canonical(lua_State *L)
   return 1;
 }
 
+/* host.loadstring(source, chunkname) -> function | nil, message: the VM's
+** loader, which the runtime takes in an environment without loadstring
+** (Garry's Mod's) to load the chunks host.compile makes. Only the runtime
+** holds the host table.
+*/
+static int host_loadstring(lua_State *L)
+{
+  size_t len;
+  const char *s = luaL_checklstring(L, 1, &len);
+  const char *name = luaL_optstring(L, 2, s);
+  if (luaL_loadbuffer(L, s, len, name) == 0)
+    return 1;
+  lua_pushnil(L);
+  lua_insert(L, -2);
+  return 2;
+}
+
 /* host.add_path(dir) */
 static int host_addpath(lua_State *L)
 {
@@ -610,6 +627,8 @@ void lj_nl_openhost(lua_State *L)
   lua_setfield(L, -2, "add_path");
   lua_pushcfunction(L, host_canonical);
   lua_setfield(L, -2, "canonical");
+  lua_pushcfunction(L, host_loadstring);
+  lua_setfield(L, -2, "loadstring");
   /* The sandbox profile (lj_nlsandbox.c). */
   lua_pushcfunction(L, lj_nl_hostsandbox);
   lua_setfield(L, -2, "sandbox");

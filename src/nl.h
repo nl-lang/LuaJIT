@@ -38,9 +38,11 @@ LUA_API void NL_VERSION_SYM(void);
 #define NL_OPT_STRIP		2	/* Strip debug info; default 0. */
 #define NL_OPT_MAXWORKERS	3	/* Dedicated workers; default 64. */
 #define NL_OPT_WORKERMEM	4	/* Bytes per worker, 0 = no limit. */
-#define NL_OPT_GLUA		5	/* Accept GLua (Garry's Mod) syntax; default 0. */
+#define NL_OPT_GLUA		5	/* Parse GLua (Garry's Mod): its syntax, and Lua 5.1's __len
+				   and comparison rules for that code; default 0. */
 #define NL_OPT_SANDBOX		6	/* Sandbox profile for untrusted mods; default 0. */
 #define NL_OPT_LOCALIZE		7	/* Localized Lua paths: 0, 1 std, 2 all; default 1. */
+#define NL_OPT_OPENLIBS		8	/* luaL_openlibs opens NL; default 1. */
 
 LUALIB_API int luaopen_nl(lua_State *L);			/* [-0, +0, e] */
 LUA_API int nl_setoption(lua_State *L, int opt, lua_Integer value); /* [-0, +0, -] */
@@ -52,6 +54,18 @@ LUA_API int nl_isworker(lua_State *L);				/* [-0, +0, -] */
 */
 LUA_API int nl_workersstarted(lua_State *L);			/* [-0, +0, -] */
 LUA_API void nl_sandboxenv(lua_State *L);			/* [-0, +1, m] */
+/* With NL_OPT_OPENLIBS 0, luaL_openlibs leaves NL out and the embedder
+** calls luaopen_nl when it wants NL in the state: a state that never runs
+** an NL file then has the stock environment. Workers open NL whatever the
+** option says.
+**
+** fn is called by luaopen_nl with the runtime's host table (runtime/nl.lua,
+** HOST TABLE) as its argument, before the runtime reads it: the embedder
+** sets fields of its own there (skip_globals, event, include, ...). A
+** function that fn returns is called with rt once NL is open. Set on the
+** main state before luaopen_nl; workers do not call it.
+*/
+LUA_API void nl_sethostinit(lua_State *L, lua_CFunction fn);	/* [-0, +0, -] */
 
 /* -- Loading (API.md 2.3) ------------------------------------------------ */
 

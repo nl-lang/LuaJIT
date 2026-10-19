@@ -30,7 +30,7 @@ typedef struct NLPost {
   struct NLPost *next;
 } NLPost;
 
-#define NL_OPT__MAX	7
+#define NL_OPT__MAX	8
 
 /* lj_nltransfer.c and lj_nlworker.c (IMPLEMENTATION_PLAN M10). */
 typedef struct NLMsg NLMsg;		/* An encoded message (lj_nltransfer.c). */
@@ -78,6 +78,7 @@ typedef struct NLState {
   nl_Loader loader;		/* Host loader, when hasloader. */
   nl_Reporter reporter;
   void *reporterdata;
+  lua_CFunction hostinit;	/* nl_sethostinit. */
   lua_Integer opt[NL_OPT__MAX+1];
   char **path;			/* Import search path (DESIGN 10). */
   size_t npath, szpath;

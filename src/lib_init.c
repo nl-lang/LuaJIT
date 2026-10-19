@@ -46,6 +46,11 @@ LUALIB_API void luaL_openlibs(lua_State *L)
 {
   const luaL_Reg *lib;
   for (lib = lj_lib_load; lib->func; lib++) {
+#if LJ_NL
+    /* NL_OPT_OPENLIBS 0: the embedder opens NL when it wants it (nl.h). */
+    if (lib->func == luaopen_nl && !nl_getoption(L, NL_OPT_OPENLIBS))
+      continue;
+#endif
     lua_pushcfunction(L, lib->func);
     lua_pushstring(L, lib->name);
     lua_call(L, 1, 0);
