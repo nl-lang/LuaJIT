@@ -730,6 +730,13 @@ static int start_f(lua_State *L)
   return 0;
 }
 
+/* A full collection (finalizers may raise). */
+static int collect_f(lua_State *L)
+{
+  lua_gc(L, LUA_GCCOLLECT, 0);
+  return 0;
+}
+
 /* The message of the error on top, popped. */
 static void pop_message(lua_State *L, char *buf, size_t size)
 {
@@ -780,11 +787,24 @@ static void worker_open(NLWorker *w)
   init = wk->init;
   initdata = wk->initdata;
   mtx_unlock(&wk->mtx);
-  if (init && lua_cpcall(L, init, initdata) != 0) {
-    char full[600];
-    pop_message(L, msg, sizeof(msg));
-    snprintf(full, sizeof(full), "the worker-init function failed: %s", msg);
-    worker_setfailure(w, full);
+  if (init) {
+    /* The init function runs without the memory limit, so that a host
+    ** binding that allocates outside a protected call (a Rust host's
+    ** attachment to the state) is not failed halfway; the memory it leaves
+    ** counts, and a worker over its limit afterwards fails below.
+    */
+    size_t limit = w->limit;
+    w->limit = 0;
+    if (lua_cpcall(L, init, initdata) != 0) {
+      char full[600];
+      pop_message(L, msg, sizeof(msg));
+      snprintf(full, sizeof(full), "the worker-init function failed: %s", msg);
+      worker_setfailure(w, full);
+    }
+    if (limit && w->mem > limit && lua_cpcall(L, collect_f, NULL) != 0)
+      lua_pop(L, 1);  /* A finalizer's error: the count decides. */
+    w->limit = limit;
+    if (limit && w->mem > limit) w->overlimit = 1;
   }
   worker_syncsandbox(w);
   if (!w->overlimit && lua_cpcall(L, start_f, w) != 0) {
