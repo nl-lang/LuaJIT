@@ -235,8 +235,10 @@ LUA_API void nl_setwakeup(lua_State *L, nl_Wakeup fn, void *data); /* [-0, +0, -
 LUA_API void nl_setworkers(lua_State *L, int n);		/* [-0, +0, -] */
 /* fn runs in every new worker state W as lua_cpcall(W, fn, data) does, on
 ** the worker's thread, before any NL file loads. An error fails the worker
-** with WorkerError. data is shared by all workers. No effect when
-** nl_workersstarted(L).
+** with WorkerError. fn runs without the memory limit (NL_OPT_WORKERMEM):
+** what it leaves counts, and a worker still over the limit after it (and a
+** full collection) fails with WorkerError. data is shared by all workers.
+** No effect when nl_workersstarted(L).
 */
 LUA_API void nl_setworkerinit(lua_State *L, lua_CFunction fn,
 			      void *data);			/* [-0, +0, -] */
