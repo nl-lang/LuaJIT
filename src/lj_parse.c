@@ -1091,12 +1091,14 @@ static void lex_match(LexState *ls, LexToken what, LexToken who, BCLine line)
   }
 }
 
-/* Check for a name, including soft keywords. */
-static LJ_AINLINE int lex_isname(LexToken tok)
+/* Check for a name, including soft keywords. In GLua `continue` is a
+** reserved word, as in Garry's Mod.
+*/
+static LJ_AINLINE int lex_isname(LexState *ls, LexToken tok)
 {
   return (tok == TK_name ||
 	  (!LJ_52 && tok == TK_goto) ||
-	  tok == TK_continue ||
+	  (tok == TK_continue && !ls->glua) ||
 	  tok == TK_const);
 }
 
@@ -1104,7 +1106,7 @@ static LJ_AINLINE int lex_isname(LexToken tok)
 static GCstr *lex_str(LexState *ls)
 {
   GCstr *s;
-  if (!lex_isname(ls->tok))
+  if (!lex_isname(ls, ls->tok))
     err_token(ls, TK_name);
   s = strV(&ls->tokval);
   lj_lex_next(ls);
@@ -1717,7 +1719,7 @@ static GCproto *fs_finish(LexState *ls, BCLine line)
   pt->sizept = (MSize)sizept;
   pt->trace = 0;
   pt->flags = (uint8_t)(fs->flags & ~(PROTO_HAS_RETURN|PROTO_FIXUP_RETURN));
-  pt->nlflags = 0;  /* Lua source: no NL flags. */
+  pt->nlflags = ls->glua ? PROTO_GLUA : 0;  /* Lua source: no NL flags. */
   pt->numparams = fs->numparams;
   pt->framesize = fs->framesize;
   setgcref(pt->chunkname, obj2gco(ls->chunkname));
@@ -1866,7 +1868,7 @@ static void expr_table(LexState *ls, ExpDesc *e)
       if (!expr_isk(&key)) expr_index(fs, e, &key);
       if (expr_isnumk(&key) && expr_numiszero(&key)) needarr = 1; else nhash++;
       lex_check(ls, '=');
-    } else if (lex_isname(ls->tok) && lj_lex_lookahead(ls) == '=') {
+    } else if (lex_isname(ls, ls->tok) && lj_lex_lookahead(ls) == '=') {
       expr_str(ls, &key);
       lex_check(ls, '=');
       nhash++;
@@ -1955,7 +1957,7 @@ static BCReg parse_params(LexState *ls, int needself,
     var_new_lit(ls, nparams++, "self");
   if (ls->tok != after) {
     do {
-      if (lex_isname(ls->tok)) {
+      if (lex_isname(ls, ls->tok)) {
 	var_new(ls, nparams++, lex_str(ls));
       } else if (ls->tok == TK_dots) {
 	lj_lex_next(ls);
@@ -2123,7 +2125,7 @@ static BCPos expr_primary_nav(LexState *ls, ExpDesc *v, int eflags)
     expr(ls, v, 0);  /* Don't propagate eflags. */
     lex_match(ls, ')', '(', line);
     expr_discharge(ls->fs, v);
-  } else if (lex_isname(ls->tok)) {
+  } else if (lex_isname(ls, ls->tok)) {
     BCLine line = ls->linenumber;
     GCstr *name = lex_str(ls);
     if (!(eflags & EXPR_F_NORES) && ls->tok == TK_arrow) {
@@ -3018,7 +3020,7 @@ static int parse_stmt(LexState *ls)
     break;
   case TK_const: {
     LexToken tokx = lj_lex_lookahead(ls);
-    if (!(lex_isname(tokx) || tokx == TK_function))
+    if (!(lex_isname(ls, tokx) || tokx == TK_function))
       goto assign;  /* Soft keyword. */
     parse_local(ls, VSTACK_CONST);
     break;
@@ -3052,7 +3054,7 @@ static int parse_stmt(LexState *ls)
     parse_label(ls);
     break;
   case TK_goto:
-    if (LJ_52 || lex_isname(lj_lex_lookahead(ls))) {  /* 5.1 soft keyword. */
+    if (LJ_52 || lex_isname(ls, lj_lex_lookahead(ls))) {  /* 5.1 soft keyword. */
       lj_lex_next(ls);
       parse_goto(ls);
       break;

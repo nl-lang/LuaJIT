@@ -475,6 +475,13 @@ TValue * LJ_FASTCALL lj_meta_len(lua_State *L, cTValue *o)
       lj_err_optype(L, o, LJ_ERR_OPLEN);
     return NULL;
   }
+#if LJ_NL && !LJ_52
+  /* GLua code keeps Lua 5.1's rule: the length of a table is its own,
+  ** whatever its __len (the interpreter takes NULL as no metamethod).
+  */
+  if (tvistab(o) && lj_nl_curglua(L))
+    return NULL;
+#endif
   return mmcall(L, lj_cont_ra, mo, o, LJ_52 ? o : niltv(L));
 }
 
@@ -537,6 +544,15 @@ TValue * LJ_FASTCALL lj_meta_equal_cd(lua_State *L, BCIns ins)
 }
 #endif
 
+/* NL's rules for ordered comparisons, unless the running
+** code is GLua (lj_nl_curglua), which keeps Lua 5.1's.
+*/
+#if LJ_NL
+#define meta_nlrules(L)		(!lj_nl_curglua(L))
+#else
+#define meta_nlrules(L)		0
+#endif
+
 /* Helper for ordered comparisons. String compare, __lt/__le metamethods. */
 TValue *lj_meta_comp(lua_State *L, cTValue *o1, cTValue *o2, int op)
 {
@@ -567,10 +583,11 @@ TValue *lj_meta_comp(lua_State *L, cTValue *o1, cTValue *o2, int op)
     cTValue *mo = lj_meta_lookup(L, tviscdata(o1) ? o1 : o2, mm);
     if (LJ_UNLIKELY(tvisnil(mo))) goto err;
     return mmcall(L, cont, mo, o1, o2);
-  } else if (LJ_52 || LJ_NL || itype(o1) == itype(o2)) {
-    /* Never called with two numbers. NL: __lt and __le accept operands
-    ** of different types, and the left operand is asked first, then the
-    ** right one, as in Lua 5.2.
+  } else if (LJ_52 || meta_nlrules(L) || itype(o1) == itype(o2)) {
+    /* Never called with two numbers. NL's rules: __lt and __le accept
+    ** operands of different types, and the left operand is asked first,
+    ** then the right one, as in Lua 5.2. GLua code
+    ** keeps Lua 5.1's.
     */
     if (tvisstr(o1) && tvisstr(o2)) {
       int32_t res = lj_str_cmp(strV(o1), strV(o2));
@@ -581,14 +598,18 @@ TValue *lj_meta_comp(lua_State *L, cTValue *o1, cTValue *o2, int op)
 	ASMFunction cont = (op & 1) ? lj_cont_condf : lj_cont_condt;
 	MMS mm = (op & 2) ? MM_le : MM_lt;
 	cTValue *mo = lj_meta_lookup(L, o1, mm);
+	int nomm;
 #if LJ_NL
-	if (tvisnil(mo) && tvisnil((mo = lj_nl_rightmm(L, o1, o2, mm))))
-#elif LJ_52
-	if (tvisnil(mo) && tvisnil((mo = lj_meta_lookup(L, o2, mm))))
-#else
-	cTValue *mo2 = lj_meta_lookup(L, o2, mm);
-	if (tvisnil(mo) || !lj_obj_equal(mo, mo2))
+	if (meta_nlrules(L))
+	  nomm = tvisnil(mo) && tvisnil((mo = lj_nl_rightmm(L, o1, o2, mm)));
+	else
 #endif
+#if LJ_52
+	  nomm = tvisnil(mo) && tvisnil((mo = lj_meta_lookup(L, o2, mm)));
+#else
+	  nomm = tvisnil(mo) || !lj_obj_equal(mo, lj_meta_lookup(L, o2, mm));
+#endif
+	if (nomm)
 	{
 	  if (op & 2) {  /* MM_le not found: retry with MM_lt. */
 	    cTValue *ot = o1; o1 = o2; o2 = ot;  /* Swap operands. */

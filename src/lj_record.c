@@ -51,6 +51,10 @@
 #if LJ_NL
 /* Whether the prototype being recorded is NL code (PROTO_NL). */
 #define rec_isnl(J)		((J)->pt->nlflags & PROTO_NL)
+/* Whether it was parsed as GLua (PROTO_GLUA): Lua 5.1's rules for __len
+** and ordered comparisons.
+*/
+#define rec_isglua(J)		((J)->pt->nlflags & PROTO_GLUA)
 /* An arithmetic operand the fast path takes: NL code does not convert
 ** strings to numbers, Lua code does.
 */
@@ -58,6 +62,7 @@
   (rec_isnl(J) ? tref_isnumber(tr) : tref_isnumber_str(tr))
 #else
 #define rec_isnl(J)		0
+#define rec_isglua(J)		1
 #define rec_isnumber_str(J, tr)	tref_isnumber_str(tr)
 #endif
 
@@ -1327,18 +1332,22 @@ static void rec_mm_comp(jit_State *J, RecordIndex *ix, int op)
   while (1) {
     MMS mm = (op & 2) ? MM_le : MM_lt;  /* Try __le + __lt or only __lt. */
 #if LJ_NL
-    /* Operands of different types reach the metamethods, the left operand
-    ** first, then the right one under NL's rule.
+    /* NL's rules: operands of different types reach the metamethods, the
+    ** left operand first, then the right one. GLua code
+    ** keeps Lua 5.1's, below.
     */
-    if (!lj_record_mm_lookup(J, ix, mm)) {  /* Lookup mm on 1st operand. */
-      ix->tab = ix->key;
-      copyTV(J->L, &ix->tabv, &ix->keyv);
-      if (!rec_nl_rightmm(J, ix, mm, ix->val))  /* Lookup mm on 2nd operand. */
-	goto nomatch;
+    if (!rec_isglua(J)) {
+      if (!lj_record_mm_lookup(J, ix, mm)) {  /* Lookup mm on 1st operand. */
+	ix->tab = ix->key;
+	copyTV(J->L, &ix->tabv, &ix->keyv);
+	if (!rec_nl_rightmm(J, ix, mm, ix->val))  /* Lookup mm on 2nd operand. */
+	  goto nomatch;
+      }
+      rec_mm_callcomp(J, ix, op);
+      return;
     }
-    rec_mm_callcomp(J, ix, op);
-    return;
-#elif LJ_52
+#endif
+#if LJ_52
     if (!lj_record_mm_lookup(J, ix, mm)) {  /* Lookup mm on 1st operand. */
       ix->tab = ix->key;
       copyTV(J->L, &ix->tabv, &ix->keyv);
@@ -2549,7 +2558,7 @@ void lj_record_ins(jit_State *J)
 	  ta = IRT_NUM;
 	} else if (ta == IRT_NUM && tc == IRT_INT) {
 	  rc = emitir(IRTN(IR_CONV), rc, IRCONV_NUM_INT);
-	} else if (LJ_52 || LJ_NL) {
+	} else if (LJ_52 || (LJ_NL && !rec_isglua(J))) {
 	  ta = IRT_NIL;  /* Force metamethod for different types. */
 	} else if (!((ta == IRT_FALSE || ta == IRT_TRUE) &&
 		     (tc == IRT_FALSE || tc == IRT_TRUE))) {
@@ -2645,8 +2654,8 @@ void lj_record_ins(jit_State *J)
   case BC_LEN:
     if (tref_isstr(rc))
       rc = emitir(IRTI(IR_FLOAD), rc, IRFL_STR_LEN);
-    else if (!(LJ_52 || LJ_NL) && tref_istab(rc))
-      rc = emitir(IRTI(IR_ALEN), rc, TREF_NIL);
+    else if (!(LJ_52 || (LJ_NL && !rec_isglua(J))) && tref_istab(rc))
+      rc = emitir(IRTI(IR_ALEN), rc, TREF_NIL);  /* GLua code: no __len. */
     else
       rc = rec_mm_len(J, rc, rcv);  /* NL: __len on tables. */
     break;

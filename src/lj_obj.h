@@ -428,6 +428,10 @@ typedef struct GCproto {
 */
 #define PROTO_METHOD		0x01	/* A method: closures get NLFUNC_METHOD. */
 #define PROTO_NL		0x02	/* Compiled from NL: NL's string library and operator rules. */
+/* Parsed as GLua (NL_OPT_GLUA): Lua 5.1's rules for __len and ordered
+** comparisons, as Garry's Mod has them. Source only: not in dumps.
+*/
+#define PROTO_GLUA		0x04
 
 #define PROTO_UV_LOCAL		0x8000	/* Upvalue for local slot. */
 #define PROTO_UV_IMMUTABLE	0x4000	/* Immutable upvalue. */
