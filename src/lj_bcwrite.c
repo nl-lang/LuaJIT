@@ -428,7 +428,7 @@ static void bcwrite_header(BCWriteCtx *ctx)
 	 ((ctx->pt->flags & PROTO_FFI) ? BCDUMP_F_FFI : 0) +
 	 (bcwrite_bitop(ctx->pt) ? BCDUMP_F_BITOP : 0)
 #if LJ_NL
-	 + (ctx->pt->nlflags ? BCDUMP_F_NL : 0)
+	 + ((ctx->pt->nlflags & (PROTO_NL|PROTO_METHOD)) ? BCDUMP_F_NL : 0)
 #endif
 	 ;
   if (!(ctx->flags & BCDUMP_F_STRIP)) {

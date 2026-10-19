@@ -412,14 +412,14 @@ static LexToken lex_scan(LexState *ls, TValue *tv)
 	    if (ls->c == '*') {
 	      if (lex_next(ls) == '/') break;
 	    } else if (ls->c == LEX_EOF) {
-	      lj_lex_error(ls, TK_eof, LJ_ERR_XLCOM);
+	      break;  /* Unfinished: the comment runs to the end, as in gmod. */
 	    } else if (lex_iseol(ls)) {
 	      lex_newline(ls);
 	    } else {
 	      lex_next(ls);
 	    }
 	  }
-	  lex_next(ls);  /* Skip '/'. */
+	  if (ls->c != LEX_EOF) lex_next(ls);  /* Skip '/'. */
 	  continue;
 	}
       }

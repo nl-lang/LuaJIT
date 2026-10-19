@@ -47,6 +47,16 @@ static LJ_AINLINE int lj_nl_curnl(lua_State *L)
   return isluafunc(fn) && (funcproto(fn)->nlflags & PROTO_NL);
 }
 
+/* Whether the running function was parsed as GLua (PROTO_GLUA): Lua 5.1's
+** rules for __len and ordered comparisons. As lj_nl_curnl, for the slow
+** paths.
+*/
+static LJ_AINLINE int lj_nl_curglua(lua_State *L)
+{
+  GCfunc *fn = curr_func(L);
+  return isluafunc(fn) && (funcproto(fn)->nlflags & PROTO_GLUA);
+}
+
 /* lj_nlvm.c */
 LJ_FUNCA int lj_nl_ismethod(global_State *g, cTValue *f, cTValue *recv);
 LJ_FUNCA int lj_nl_ismethod_ud(global_State *g, GCudata *ud);
