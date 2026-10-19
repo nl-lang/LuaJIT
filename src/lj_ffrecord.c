@@ -641,8 +641,13 @@ static void LJ_FASTCALL recff_math_round(jit_State *J, RecordFFData *rd)
     /* Result is integral (or NaN/Inf), but may not fit an int32_t. */
     if (LJ_DUALNUM) {  /* Try to narrow using a guarded conversion to int. */
       lua_Number n = lj_vm_foldfpm(numberVnum(&rd->argv[0]), rd->data);
-      if (lj_num2int_ok(n))
+      /* The result may be -0, which the conversion check lets pass as 0.
+      ** So narrow only a non-zero result and guard against a zero one.
+      */
+      if (n != 0 && lj_num2int_ok(n)) {
 	tr = emitir(IRTGI(IR_CONV), tr, IRCONV_INT_NUM|IRCONV_CHECK);
+	emitir(IRTGI(IR_NE), tr, lj_ir_kint(J, 0));
+      }
     }
     J->base[0] = tr;
   }
