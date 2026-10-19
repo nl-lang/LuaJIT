@@ -299,14 +299,18 @@ static int narrow_conv_backprop(NarrowConv *nc, IRRef ref, int depth)
     return 10;  /* Never narrow other FP constants (this is rare). */
   }
 
-  /* Try to CSE the conversion. Stronger checks are ok, too. */
+  /* Try to CSE the conversion. Stronger checks are ok, too. An operand of
+  ** an unchecked conversion needs a checked one. See below.
+  */
   cref = J->chain[fins->o];
   while (cref > ref) {
     IRIns *cr = IR(cref);
     if (cr->op1 == ref &&
 	(fins->o == IR_TOBIT ||
 	 ((cr->op2 & IRCONV_MODEMASK) == (nc->mode & IRCONV_MODEMASK) &&
-	  irt_isguard(cr->t) >= irt_isguard(fins->t)))) {
+	  irt_isguard(cr->t) >= irt_isguard(fins->t) &&
+	  (depth == 0 || irt_isguard(cr->t) ||
+	   (nc->mode & IRCONV_CONVMASK) != IRCONV_ANY)))) {
       *nc->sp++ = NARROWINS(NARROW_REF, cref);
       return 0;  /* Already there, no additional conversion needed. */
     }
@@ -339,8 +343,12 @@ static int narrow_conv_backprop(NarrowConv *nc, IRRef ref, int depth)
       NarrowIns *savesp = nc->sp;
       int count = narrow_conv_backprop(nc, ir->op1, depth);
       count += narrow_conv_backprop(nc, ir->op2, depth);
-      /* Limit total number of conversions. */
-      if (count <= 1 && nc->sp < nc->maxsp) {
+      /* Limit total number of conversions. An unchecked conversion of an
+      ** operand may be inexact (non-integral or out of range), and the
+      ** integer arithmetic would not undo that: allow none of them.
+      */
+      if (count <= ((nc->mode & IRCONV_CONVMASK) == IRCONV_ANY ? 0 : 1) &&
+	  nc->sp < nc->maxsp) {
 	*nc->sp++ = NARROWINS(IRT(ir->o, nc->t), ref);
 	return count;
       }
