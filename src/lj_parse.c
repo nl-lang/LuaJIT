@@ -952,10 +952,7 @@ static void bcemit_binop(FuncState *fs, BinOpr op, ExpDesc *e1, ExpDesc *e2)
   if (op <= OPR_POW) {
     if (!foldarith(op, e1, e2)) bcemit_arith(fs, op, e1, e2);
   } else if (op <= OPR_BSAR) {
-    if (!foldbitop(op, e1, e2)) {
-      fs->flags |= PROTO_BITOP;
-      bcemit_arith(fs, op, e1, e2);
-    }
+    if (!foldbitop(op, e1, e2)) bcemit_arith(fs, op, e1, e2);
   } else if (op == OPR_AND) {
     lj_assertFS(e1->t == NO_JMP, "jump list not closed");
     expr_discharge(fs, e2);
@@ -1053,7 +1050,6 @@ static void bcemit_unop(FuncState *fs, BCOp op, ExpDesc *e)
 	return;
       }
     }
-    if (op == BC_BNOT) fs->flags |= PROTO_BITOP;
     expr_toanyreg(fs, e);
   }
   expr_free(fs, e);
@@ -1995,7 +1991,7 @@ static void proto_begin(FuncState *fs, BCLine line, BCReg nparams)
 /* Finish a function prototype. */
 static void proto_finish(LexState *ls, ExpDesc *e, ptrdiff_t oldbase)
 {
-  MSize flags = (ls->fs->flags & (PROTO_FFI|PROTO_BITOP));
+  MSize flags = (ls->fs->flags & PROTO_FFI);
   GCproto *pt = fs_finish(ls, (ls->lastline = ls->linenumber));
   FuncState *pfs = ls->fs;
   pfs->bcbase = ls->bcstack + oldbase;  /* May have been reallocated. */

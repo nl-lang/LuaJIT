@@ -317,6 +317,28 @@ static char *bcwrite_bytecode(BCWriteCtx *ctx, char *p, GCproto *pt)
   return p;
 }
 
+/* Check whether a prototype or one of its children uses bit operators.
+** This is not kept in the prototype flags: the closure counter uses them.
+*/
+static int bcwrite_bitop(GCproto *pt)
+{
+  const BCIns *bc = proto_bc(pt);
+  BCPos pc;
+  for (pc = 1; pc < pt->sizebc; pc++) {
+    BCOp op = bc_op(bc[pc]);
+    if (op >= BC_BNOT && op <= BC_BSAR) return 1;
+  }
+  if ((pt->flags & PROTO_CHILD)) {
+    ptrdiff_t i, n = pt->sizekgc;
+    GCRef *kr = mref(pt->k, GCRef) - 1;
+    for (i = 0; i < n; i++, kr--) {
+      GCobj *o = gcref(*kr);
+      if (o->gch.gct == ~LJ_TPROTO && bcwrite_bitop(gco2pt(o))) return 1;
+    }
+  }
+  return 0;
+}
+
 /* Write prototype. */
 static void bcwrite_proto(BCWriteCtx *ctx, GCproto *pt)
 {
@@ -340,7 +362,8 @@ static void bcwrite_proto(BCWriteCtx *ctx, GCproto *pt)
   p += 5;  /* Leave room for final size. */
 
   /* Write prototype header. */
-  *p++ = (pt->flags & (PROTO_CHILD|PROTO_VARARG|PROTO_FFI|PROTO_BITOP))
+  *p++ = (pt->flags & (PROTO_CHILD|PROTO_VARARG|PROTO_FFI))
+	 | (bcwrite_bitop(pt) ? BCDUMP_PF_BITOP : 0)
 #if LJ_NL
 	 | ((pt->nlflags & PROTO_METHOD) ? BCDUMP_PF_METHOD : 0)
 	 | ((pt->nlflags & PROTO_NL) ? BCDUMP_PF_NL : 0)
@@ -403,7 +426,7 @@ static void bcwrite_header(BCWriteCtx *ctx)
   *p++ = (ctx->flags & (BCDUMP_F_STRIP | BCDUMP_F_FR2)) +
 	 LJ_BE*BCDUMP_F_BE +
 	 ((ctx->pt->flags & PROTO_FFI) ? BCDUMP_F_FFI : 0) +
-	 ((ctx->pt->flags & PROTO_BITOP) ? BCDUMP_F_BITOP : 0)
+	 (bcwrite_bitop(ctx->pt) ? BCDUMP_F_BITOP : 0)
 #if LJ_NL
 	 + (ctx->pt->nlflags ? BCDUMP_F_NL : 0)
 #endif

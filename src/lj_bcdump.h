@@ -55,6 +55,11 @@
 #define BCDUMP_F_KNOWN		(BCDUMP_F_BITOP*2-1)
 #endif
 
+/* Prototype flag in a dump, besides PROTO_CHILD, PROTO_VARARG, PROTO_FFI.
+** Not kept in GCproto.flags, where 0x80 is part of the closure counter.
+*/
+#define BCDUMP_PF_BITOP		0x80	/* It or a child uses bit operators. */
+
 /* NL: GCproto.nlflags in the prototype's flags byte of a BCDUMP_F_NL dump.
 ** The in-memory bits 0x08 (PROTO_NOJIT) and 0x10 (PROTO_ILOOP) are never
 ** written, so these take their place.
