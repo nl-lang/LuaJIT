@@ -157,10 +157,12 @@ void lj_nl_callhandled(lua_State *L, int nargs)
 
 static char typenames_key;
 
-static int typeof_f(lua_State *L, void *ud)
+/* Calls rt[ud](value) and returns its result when it is a string, anchored
+** for the state's lifetime; nothing otherwise.
+*/
+static int typestring_f(lua_State *L, void *ud)
 {
-  UNUSED(ud);
-  lj_nl_pushrt(L, "typeof");
+  lj_nl_pushrt(L, (const char *)ud);
   lua_pushvalue(L, 1);
   lua_call(L, 1, 1);
   /* A string only: a number would be converted in a slot nobody anchors. */
@@ -184,18 +186,31 @@ static int typeof_f(lua_State *L, void *ud)
   return 1;
 }
 
-/* NULL when the runtime fails, which a correct runtime never does. */
-LUA_API const char *nl_typeof(lua_State *L, int idx)
+/* rt[fn](value at idx) as a string that lives as long as the state; NULL
+** when it gives no string or the runtime fails.
+*/
+static const char *typestring(lua_State *L, int idx, const char *fn)
 {
   const char *s;
   int st;
   if (!lua_checkstack(L, 3)) return NULL;
   lua_pushvalue(L, idx);
-  st = lj_nl_protect(L, typeof_f, NULL, 1, 1);
+  st = lj_nl_protect(L, typestring_f, (void *)fn, 1, 1);
   if (protect_failed(L, st)) return NULL;
   s = lua_type(L, -1) == LUA_TSTRING ? lua_tostring(L, -1) : NULL;
   lua_pop(L, 1);
   return s;
+}
+
+/* NULL when the runtime fails, which a correct runtime never does. */
+LUA_API const char *nl_typeof(lua_State *L, int idx)
+{
+  return typestring(L, idx, "typeof");
+}
+
+LUA_API const char *nl_typename(lua_State *L, int idx)
+{
+  return typestring(L, idx, "typenameof");
 }
 
 static int isa_f(lua_State *L, void *ud)

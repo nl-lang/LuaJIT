@@ -101,6 +101,12 @@ LUA_API void nl_setreporter(lua_State *L, nl_Reporter fn, void *data); /* [-0, +
 /* -- Types and values (API.md 2.5) --------------------------------------- */
 
 LUA_API const char *nl_typeof(lua_State *L, int idx);		/* [-0, +0, -] */
+/* The name of the type at idx, as a TypeError writes it: a struct, enum,
+** interface, host or built-in type (nl_typeof gives its values that name),
+** or a combination such as `Number?`. NULL when the value is not a type (a
+** module, an instance). The string lives as long as the state.
+*/
+LUA_API const char *nl_typename(lua_State *L, int idx);	/* [-0, +0, -] */
 LUA_API int nl_isa(lua_State *L, int idx, int type);		/* [-0, +0, -] */
 LUA_API void nl_gettype(lua_State *L, const char *name);	/* [-0, +1, -] */
 LUA_API void nl_settype(lua_State *L, int idx, const char *name,
