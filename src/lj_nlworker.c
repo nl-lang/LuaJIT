@@ -434,6 +434,7 @@ struct NLWorker {
   int closed;			/* Ended for good. */
   int broken;			/* No Lua can run in it (the libraries failed). */
   int discard;			/* To be discarded (memory, a failure). */
+  int served;			/* Pool: took a request since its state opened. */
   char *failure;		/* Why: the message of WorkerError. */
   char **files;			/* Files its state has loaded (pool). */
   size_t nfiles, szfiles;	/* Guarded by wk->mtx: read by enqueue. */
@@ -1016,6 +1017,7 @@ static int worker_step(NLWorker *w)
     mtx_unlock(&wk->mtx);
     if (r) {
       progress = 1;
+      w->served = 1;
       running_add(w, r);
       if (w->broken) {
 	running_remove(w, r);
@@ -1035,6 +1037,24 @@ static int worker_step(NLWorker *w)
 	}
       }
     }
+  }
+  if (w->kind == W_POOL && !w->served && !w->broken &&
+      (w->discard || w->overlimit)) {
+    /* It failed before it took a request (over its limit while idle, right
+    ** after it opened): a replacement would fail the same way, over and
+    ** over, so it stays, failing every request, as one whose libraries do
+    ** not fit.
+    */
+    if (w->overlimit) {
+      snprintf(msg, sizeof(msg), "the memory limit of a worker (NL_OPT_WORKERMEM, "
+	       "%llu bytes) is too small for its libraries, the worker-init "
+	       "function and its start",
+	       (unsigned long long)w->limit);
+      free(w->failure);
+      w->failure = str_dup(msg);
+    }
+    w->discard = 0;
+    w->broken = 1;
   }
   if (w->overlimit && !w->broken) {
     char m[200];
@@ -1137,6 +1157,7 @@ static int worker_after(NLWorker *w)
   if (!stop && w->discard && w->kind == W_POOL) {
     /* A pool worker is replaced. */
     w->discard = 0;
+    w->served = 0;
     w->opened = 0;
     w->broken = 0;
     free(w->failure);
