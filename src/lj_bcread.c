@@ -357,7 +357,7 @@ GCproto *lj_bcread_proto(LexState *ls)
   pt->sizekn = sizekn;
   pt->sizept = sizept;
   pt->sizeuv = (uint8_t)sizeuv;
-  pt->flags = (uint8_t)(flags & (PROTO_CHILD|PROTO_VARARG|PROTO_FFI|PROTO_BITOP));
+  pt->flags = (uint8_t)(flags & (PROTO_CHILD|PROTO_VARARG|PROTO_FFI));
 #if LJ_NL
   pt->nlflags = (bcread_flags(ls) & BCDUMP_F_NL) ?
     (uint8_t)(((flags & BCDUMP_PF_METHOD) ? PROTO_METHOD : 0) |
