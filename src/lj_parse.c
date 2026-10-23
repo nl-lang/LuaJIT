@@ -2523,8 +2523,12 @@ static void parse_assignment(LexState *ls, LHSVarList *lh, BCReg nvars)
     lex_check(ls, '=');
     nexps = expr_list(ls, &e);
     if (nexps == nvars) {
-      if (e.k == VCALL) {
-	if (bc_op(*bcptr(ls->fs, &e)) == BC_VARG) {  /* Vararg assignment. */
+      /* A trailing call (or a safe-navigation call, VCALLNAV) is turned into
+      ** its base register here, so that bcemit_store frees that register
+      ** and the stores of the earlier variables find theirs below it.
+      */
+      if (e.k == VCALL || e.k == VCALLNAV) {
+	if (e.k == VCALL && bc_op(*bcptr(ls->fs, &e)) == BC_VARG) {  /* Vararg assignment. */
 	  ls->fs->freereg--;
 	  e.k = VRELOCABLE;
 	} else {  /* Multiple call results. */
