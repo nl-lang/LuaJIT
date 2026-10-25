@@ -67,7 +67,6 @@ typedef struct NLState {
   int drain_waiting;		/* nl_drain waits for the inbox. */
   /* -- Owner thread only. -- */
   int rtref;			/* Registry reference of rt, or LUA_NOREF. */
-  int intrref;			/* Registry reference of the intrinsic table (lj_nl.h). */
   int trampref;			/* Registry reference of the trampoline. */
   int guardref;			/* Registry reference of the guard metatable. */
   int sandboxref;		/* Registry reference of the sandbox environment. */

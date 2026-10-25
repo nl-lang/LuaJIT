@@ -24,7 +24,7 @@
 
 /* The intrinsic table (nlc.h, NLC_INTRINSICS): KINTR reads it from
 ** g->nl_intr, the array part of a table that luaopen_nl fills and anchors
-** in the registry. Index 0 is unused.
+** as a GC root (GCROOT_NLINTR). Index 0 is unused.
 */
 enum {
   NLINTR__0,

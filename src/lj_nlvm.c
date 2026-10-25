@@ -31,13 +31,14 @@ static const char *const nl_intr_names[] = {
 };
 
 /* Fills the intrinsic table from the runtime table on top of the stack
-** (left there) and points g->nl_intr at its array part. The table is
-** anchored in the registry and never written again, so the array part
-** stays where it is and the JIT may treat the entries as constants.
+** (left there) and points g->nl_intr at its array part. The table is a GC
+** root of its own (GCROOT_NLINTR), not a value of the registry, so no
+** script reaches it (debug.getregistry) to resize, retype or free it: it
+** is never written again, its array part stays where it is, and the JIT
+** may treat the entries as constants.
 */
 void lj_nl_openintr(lua_State *L)
 {
-  NLState *ns = nl_state(L);
   int n = (int)(NLINTR__MAX - 1), i;
   GCtab *t;
   lua_createtable(L, n, 0);  /* asize n+1: entries 1..n in the array part. */
@@ -47,7 +48,9 @@ void lj_nl_openintr(lua_State *L)
   }
   t = tabV(L->top-1);
   lj_assertL(t->asize > (uint32_t)n, "intrinsic table has no array part");
-  ns->intrref = luaL_ref(L, LUA_REGISTRYINDEX);
+  /* The GC marks its roots again in its atomic phase: no barrier. */
+  setgcref(G(L)->gcroot[GCROOT_NLINTR], obj2gco(t));
+  lua_pop(L, 1);
   /* A runtime without NL's String library (a test stand-in) gets no table:
   ** no NL dump loads then (lj_bcread.c), and the string paths of lj_meta.c
   ** stay Lua's.
