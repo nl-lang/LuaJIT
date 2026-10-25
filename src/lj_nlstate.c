@@ -126,8 +126,8 @@ static int path_isabs(const char *p)
 }
 
 /* add_path(dir): a relative directory is resolved against the working
-** directory at the time of the call, so a
-** later chdir does not move it.
+** directory at the time of the call, and kept absolute, so a later chdir
+** does not move it.
 */
 int lj_nl_addpath(NLState *ns, const char *dir)
 {
