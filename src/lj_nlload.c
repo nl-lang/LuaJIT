@@ -616,7 +616,7 @@ static int host_addpath(lua_State *L)
 
 void lj_nl_openhost(lua_State *L)
 {
-  lua_createtable(L, 0, 12);
+  lua_createtable(L, 0, 13);
   lua_pushcfunction(L, host_compile);
   lua_setfield(L, -2, "compile");
   lua_pushcfunction(L, host_resolve);
@@ -629,6 +629,9 @@ void lj_nl_openhost(lua_State *L)
   lua_setfield(L, -2, "canonical");
   lua_pushcfunction(L, host_loadstring);
   lua_setfield(L, -2, "loadstring");
+  /* nl_pump, for a host that pumps from Lua (rt.pumpall). */
+  lua_pushcfunction(L, lj_nl_hostpump);
+  lua_setfield(L, -2, "pump");
   /* The sandbox profile (lj_nlsandbox.c). */
   lua_pushcfunction(L, lj_nl_hostsandbox);
   lua_setfield(L, -2, "sandbox");

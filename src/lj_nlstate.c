@@ -375,6 +375,16 @@ LUA_API int nl_pump(lua_State *L)
   return n + lj_nl_pumprt(L);
 }
 
+/* host.pump() -> boolean: nl_pump for a host written in Lua that pumps from
+** the game's frame (runtime/gmod/host.lua, through rt.pumpall): true when
+** it ran anything.
+*/
+int lj_nl_hostpump(lua_State *L)
+{
+  lua_pushboolean(L, nl_pump(L) > 0);
+  return 1;
+}
+
 /* -- Options ------------------------------------------------------------- */
 
 LUA_API int nl_setoption(lua_State *L, int opt, lua_Integer value)

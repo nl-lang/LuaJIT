@@ -114,6 +114,7 @@ LJ_FUNCA void lj_nl_report(lua_State *L);
 LJ_FUNCA int lj_nl_absindex(lua_State *L, int idx);
 LJ_FUNCA void lj_nl_inittrampoline(lua_State *L);
 LJ_FUNCA int lj_nl_pumprt(lua_State *L);
+LJ_FUNCA int lj_nl_hostpump(lua_State *L);
 
 /* lj_nlvm.c: the C side of the VM extensions. */
 LJ_FUNCA void lj_nl_openintr(lua_State *L);
