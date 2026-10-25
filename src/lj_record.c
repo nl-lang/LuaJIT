@@ -1181,12 +1181,12 @@ nocheck:
 
 #if LJ_NL
 /* The handler of a binary event when the left operand has none, as
-** lj_nl_rightmm decides it: the right operand's,
-** unless that is an NL method, in which case the interpreter raises (so
-** the trace aborts); or the runtime's generic handler of the event when
-** the left operand is a number, string or boolean and the right operand's
-** type has `coerce`. `ix->tab` is the right operand; `left` the left one.
-** Sets `ix->mobj` and returns 1 when there is a handler.
+** nl_rightmm (lj_meta.c) decides it: the right operand's, unless that is
+** an NL method, in which case the interpreter raises (so the trace
+** aborts); or the runtime's generic handler of the event when the left
+** operand is a number, string or boolean and the right operand's type has
+** `coerce`. `ix->tab` is the right operand; `left` the left one. Sets
+** `ix->mobj` and returns 1 when there is a handler.
 */
 static int rec_nl_rightmm(jit_State *J, RecordIndex *ix, MMS mm, TRef left)
 {
@@ -1333,8 +1333,8 @@ static void rec_mm_comp(jit_State *J, RecordIndex *ix, int op)
     MMS mm = (op & 2) ? MM_le : MM_lt;  /* Try __le + __lt or only __lt. */
 #if LJ_NL
     /* NL's rules: operands of different types reach the metamethods, the
-    ** left operand first, then the right one. GLua code
-    ** keeps Lua 5.1's, below.
+    ** left operand first, then the right one. GLua code keeps Lua 5.1's,
+    ** below.
     */
     if (!rec_isglua(J)) {
       if (!lj_record_mm_lookup(J, ix, mm)) {  /* Lookup mm on 1st operand. */
@@ -1626,9 +1626,9 @@ TRef lj_record_idx(jit_State *J, RecordIndex *ix)
 #if LJ_NL
     if (tref_isstr(ix->tab) && !ix->val && rec_isnl(J) &&
 	lj_nl_hasintr(J2G(J))) {
-      /* NL code indexing a string (lj_meta_tget): a
-      ** name is looked up in NL's String library, a fixed table of the
-      ** state; any other key calls the runtime's character indexing.
+      /* NL code indexing a string (lj_meta_tget): a name is looked up in
+      ** NL's String library, a fixed table of the state; any other key
+      ** calls the runtime's character indexing.
       */
       if (tref_isstr(ix->key)) {
 	GCtab *strlib = lj_nl_strlib(J2G(J));
@@ -2511,9 +2511,9 @@ void lj_record_ins(jit_State *J)
 
 #if LJ_NL
   case BC_CMPGT: case BC_CMPNGT: case BC_CMPGE: case BC_CMPNGE: {
-    /* a > b, a >= b under NL's rules (lj_meta_comp): two
-    ** numbers or two strings compare as b < a, b <= a; otherwise __gt/__ge
-    ** of the left operand, and without one the swapped __lt/__le.
+    /* a > b, a >= b under NL's rules (lj_meta_comp): two numbers or two
+    ** strings compare as b < a, b <= a; otherwise __gt/__ge of the left
+    ** operand, and without one the swapped __lt/__le.
     */
     int cop = (op >= BC_CMPGE ? BC_ISLE : BC_ISLT) | ((int)op & 1);
     if (!((tref_isnumber(ra) && tref_isnumber(rc)) ||
@@ -2856,10 +2856,10 @@ void lj_record_ins(jit_State *J)
 
 #if LJ_NL
   case BC_MSELF: {
-    /* The method test on the callee and the receiver; when it
-    ** fails the arguments move down over the receiver, here in the slot
-    ** map and in the interpreter when the instruction runs. With B set,
-    ** L->top gives the count (lj_dispatch_ins, cur_topslot).
+    /* The method test on the callee and the receiver; when it fails the
+    ** arguments move down over the receiver, here in the slot map and in
+    ** the interpreter when the instruction runs. With B set, L->top gives
+    ** the count (lj_dispatch_ins, cur_topslot).
     */
     BCReg total = rb ? (BCReg)(J->L->top - J->L->base) - ra - 2 : rc;
     BCReg i;

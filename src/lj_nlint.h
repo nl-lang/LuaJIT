@@ -102,6 +102,11 @@ LJ_FUNCA void lj_nl_lock(NLState *ns);
 LJ_FUNCA void lj_nl_unlock(NLState *ns);
 LJ_FUNCA int lj_nl_addpath(NLState *ns, const char *dir);
 LJ_FUNCA int lj_nl_adddecl(NLState *ns, const char *name);
+/* Growable lists of malloc'd strings (the search path, declaration files). */
+LJ_FUNCA int lj_nl_strlist_push(char ***list, size_t *n, size_t *sz,
+				const char *s, size_t len);
+LJ_FUNCA void lj_nl_strlist_free(char **list, size_t n);
+LJ_FUNCA int lj_nl_pathisabs(const char *p);
 
 /* lj_nlapi.c */
 LJ_FUNCA int lj_nl_isopen(lua_State *L);

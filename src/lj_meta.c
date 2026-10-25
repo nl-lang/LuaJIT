@@ -151,9 +151,9 @@ cTValue *lj_meta_tget(lua_State *L, cTValue *o, cTValue *k)
 	return tv;
 #if LJ_NL
     } else if (tvisstr(o) && lj_nl_hasintr(G(L)) && lj_nl_curnl(L)) {
-      /* NL code indexing a string: a name is looked
-      ** up in NL's String library; a number or a range goes to the
-      ** runtime's character indexing. Lua code keeps the string table.
+      /* NL code indexing a string: a name is looked up in NL's String
+      ** library; any other key goes to the runtime's character indexing.
+      ** Lua code keeps the string table.
       */
       if (tvisstr(k)) {
 	cTValue *tv = lj_tab_getstr(lj_nl_strlib(G(L)), strV(k));
@@ -243,14 +243,14 @@ static cTValue *num2num(cTValue *o, TValue *n)
 
 /* The handler of a binary event when the left operand has none: the right
 ** operand's, unless that is an NL method (a handler written in Lua keeps
-** Lua's fallback; a method expects its own type as
-** self). When the left operand is a number, string or boolean and the
-** right operand's type has `coerce` but no handler for the event, the
-** runtime's generic handler of the event runs: it asks coerce and retries
-** the operation on what it returns (runtime/nl_40_ops.lua). Returns nil
-** when there is nothing to call.
+** Lua's fallback; a method expects its own type as self). When the left
+** operand is a number, string or boolean and the right operand's type has
+** `coerce` but no handler for the event, the runtime's generic handler of
+** the event runs: it asks coerce and retries the operation on what it
+** returns (runtime/nl_40_ops.lua). Returns nil when there is nothing to
+** call. The recorder mirrors this in rec_nl_rightmm (lj_record.c).
 */
-cTValue *lj_nl_rightmm(lua_State *L, cTValue *rb, cTValue *rc, MMS mm)
+static cTValue *nl_rightmm(lua_State *L, cTValue *rb, cTValue *rc, MMS mm)
 {
   cTValue *mo = lj_meta_lookup(L, rc, mm);
   if (!tvisnil(mo)) {
@@ -276,8 +276,8 @@ TValue *lj_meta_arith(lua_State *L, TValue *ra, cTValue *rb, cTValue *rc,
   TValue tempb, tempc;
   cTValue *b, *c;
 #if LJ_NL
-  /* NL code does not convert strings to numbers: a string
-  ** operand goes to the operator dispatch, so "5" + 1 can reach String.+.
+  /* NL code does not convert strings to numbers: a string operand goes to
+  ** the operator dispatch, so "5" + 1 can reach String.+.
   */
   int nl = lj_nl_curnl(L);
   if (nl ? ((b = num2num(rb, &tempb)) != NULL &&
@@ -294,7 +294,7 @@ TValue *lj_meta_arith(lua_State *L, TValue *ra, cTValue *rb, cTValue *rc,
     cTValue *mo = lj_meta_lookup(L, rb, mm);
     if (tvisnil(mo)) {
 #if LJ_NL
-      mo = lj_nl_rightmm(L, rb, rc, mm);
+      mo = nl_rightmm(L, rb, rc, mm);
       if (tvisnil(mo)) {
 	if ((nl ? num2num(rb, &tempb) : str2num(rb, &tempb)) == NULL) rc = rb;
 	lj_err_optype(L, rc, LJ_ERR_OPARITH);
@@ -394,7 +394,7 @@ TValue *lj_meta_cat(lua_State *L, TValue *top, int left)
       cTValue *mo = lj_meta_lookup(L, top-1, MM_concat);
       if (tvisnil(mo)) {
 #if LJ_NL
-	mo = lj_nl_rightmm(L, top-1, top, MM_concat);
+	mo = nl_rightmm(L, top-1, top, MM_concat);
 #else
 	mo = lj_meta_lookup(L, top, MM_concat);
 #endif
@@ -493,8 +493,8 @@ TValue *lj_meta_equal(lua_State *L, GCobj *o1, GCobj *o2, int ne)
   if (mo) {
     TValue *top;
     uint32_t it;
-    /* NL code consults the left operand's __eq alone;
-    ** Lua code keeps Lua's same-handler rule.
+    /* NL code consults the left operand's __eq alone; Lua code keeps
+    ** Lua's same-handler rule.
     */
     if ((LJ_NL && lj_nl_curnl(L)) == 0 &&
 	tabref(o1->gch.metatable) != tabref(o2->gch.metatable)) {
@@ -544,8 +544,8 @@ TValue * LJ_FASTCALL lj_meta_equal_cd(lua_State *L, BCIns ins)
 }
 #endif
 
-/* NL's rules for ordered comparisons, unless the running
-** code is GLua (lj_nl_curglua), which keeps Lua 5.1's.
+/* NL's rules for ordered comparisons, unless the running code is GLua
+** (lj_nl_curglua), which keeps Lua 5.1's.
 */
 #if LJ_NL
 #define meta_nlrules(L)		(!lj_nl_curglua(L))
@@ -586,8 +586,7 @@ TValue *lj_meta_comp(lua_State *L, cTValue *o1, cTValue *o2, int op)
   } else if (LJ_52 || meta_nlrules(L) || itype(o1) == itype(o2)) {
     /* Never called with two numbers. NL's rules: __lt and __le accept
     ** operands of different types, and the left operand is asked first,
-    ** then the right one, as in Lua 5.2. GLua code
-    ** keeps Lua 5.1's.
+    ** then the right one, as in Lua 5.2. GLua code keeps Lua 5.1's.
     */
     if (tvisstr(o1) && tvisstr(o2)) {
       int32_t res = lj_str_cmp(strV(o1), strV(o2));
@@ -601,7 +600,7 @@ TValue *lj_meta_comp(lua_State *L, cTValue *o1, cTValue *o2, int op)
 	int nomm;
 #if LJ_NL
 	if (meta_nlrules(L))
-	  nomm = tvisnil(mo) && tvisnil((mo = lj_nl_rightmm(L, o1, o2, mm)));
+	  nomm = tvisnil(mo) && tvisnil((mo = nl_rightmm(L, o1, o2, mm)));
 	else
 #endif
 #if LJ_52

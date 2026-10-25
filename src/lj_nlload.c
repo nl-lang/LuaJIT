@@ -54,7 +54,7 @@ static void nomem(lua_State *L)
   luaL_error(L, "not enough memory");
 }
 
-/* -- Files ---------------------------------------------------------------- */
+/* -- Files --------------------------------------------------------------- */
 
 int lj_nl_isnlfile(const char *filename)
 {
@@ -100,7 +100,7 @@ static char *file_read(const char *name, size_t *size)
   return buf ? buf : (char *)malloc(1);
 }
 
-/* -- Default loader: the disk, in the import search order ----------------- */
+/* -- Default loader: the disk, in the import search order ---------------- */
 
 /* Copies dir/path.nl into out; 0 if it does not fit. dir may be NULL. */
 static int join(char *out, size_t size, const char *dir, size_t dlen,
@@ -154,15 +154,6 @@ static int try_candidate(const char *cand, char *out, size_t size)
   return file_isregular(cand) && canonical(cand, out, size);
 }
 
-static int path_isabs(const char *p)
-{
-#if LJ_TARGET_WINDOWS
-  return p[0] == '\\' || p[0] == '/' || (p[0] && p[1] == ':');
-#else
-  return p[0] == '/';
-#endif
-}
-
 static int disk_resolve(void *data, const char *from, const char *path,
 			char *out, size_t size)
 {
@@ -170,7 +161,7 @@ static int disk_resolve(void *data, const char *from, const char *path,
   char cand[NL_MAXPATH];
   size_t i;
   if (!path || !*path) return 0;
-  if (path_isabs(path))
+  if (lj_nl_pathisabs(path))
     return join(cand, sizeof(cand), NULL, 0, path) &&
 	   try_candidate(cand, out, size);
   /* 1. Relative to the directory of the importing file. */
@@ -218,20 +209,7 @@ static void disk_release(void *data, const char *name, const char *buf)
 
 static int decl_push(char ***list, size_t *n, size_t *sz, const char *s)
 {
-  size_t len = strlen(s);
-  char *copy;
-  if (*n == *sz) {
-    size_t nsz = *sz ? *sz*2 : 8;
-    char **p = (char **)realloc(*list, nsz*sizeof(char *));
-    if (!p) return 0;
-    *list = p;
-    *sz = nsz;
-  }
-  copy = (char *)malloc(len+1);
-  if (!copy) return 0;
-  memcpy(copy, s, len+1);
-  (*list)[(*n)++] = copy;
-  return 1;
+  return lj_nl_strlist_push(list, n, sz, s, strlen(s));
 }
 
 static int decl_cmp(const void *a, const void *b)
@@ -291,9 +269,8 @@ static int decl_scan(char ***list, size_t *n, size_t *sz, const char *dir)
 /* The declaration files of a compile (nlc.h): those given to
 ** nl_adddecl and, with the disk loader, every .d.nl in the directories of
 ** the search path (in the sandbox, those added before it), each
-** directory's in name order. Returns a malloc'd list
-** of malloc'd names to free with decls_free; NULL with *n == (size_t)-1 on
-** OOM.
+** directory's in name order. Returns a malloc'd list of malloc'd names to
+** free with lj_nl_strlist_free; NULL with *n == (size_t)-1 on OOM.
 */
 static char **decls_collect(NLState *ns, size_t *n)
 {
@@ -310,17 +287,9 @@ static char **decls_collect(NLState *ns, size_t *n)
   }
   return list;
 oom:
-  for (i = 0; i < *n; i++) free(list[i]);
-  free(list);
+  lj_nl_strlist_free(list, *n);
   *n = (size_t)-1;
   return NULL;
-}
-
-static void decls_free(char **list, size_t n)
-{
-  size_t i;
-  for (i = 0; i < n; i++) free(list[i]);
-  free(list);
 }
 
 /* The loader in effect: the host's (nl_setloader) or the disk. */
@@ -339,7 +308,7 @@ static void current_loader(NLState *ns, nlc_Loader *ld)
   }
 }
 
-/* -- Guards: free C resources when a Lua error unwinds past them ----------- */
+/* -- Guards: free C resources when a Lua error unwinds past them --------- */
 
 #define GUARD_MAGIC	0x4e4c4755u	/* "NLGU" */
 
@@ -440,7 +409,7 @@ static int push_file(lua_State *L, const char *name)
   return 1;
 }
 
-/* -- The host table (runtime/nl.lua, HOST TABLE) -------------------------- */
+/* -- The host table (runtime/nl.lua, HOST TABLE) ------------------------- */
 
 static void report(NLState *ns, const nlc_Diagnostic *d)
 {
@@ -494,7 +463,7 @@ static int host_compile(lua_State *L)
   opt.decls = (const char *const *)decls;
   opt.ndecls = ndecls;
   r = nl_compile(src, len, name, &opt, &ld);
-  decls_free(decls, ndecls);
+  lj_nl_strlist_free(decls, ndecls);
   if (!r) nomem(L);
   g->result = r;
   g->cleanup = guard_freeresult;
@@ -656,7 +625,7 @@ void lj_nl_openhost(lua_State *L)
   }
 }
 
-/* -- Loading -------------------------------------------------------------- */
+/* -- Loading ------------------------------------------------------------- */
 
 typedef struct LoadCtx {
   const char *buf;

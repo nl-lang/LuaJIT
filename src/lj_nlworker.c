@@ -69,7 +69,7 @@
 #include <sys/time.h>
 #endif
 
-/* -- Threads, locks and the clock ------------------------------------------ */
+/* -- Threads, locks and the clock ---------------------------------------- */
 
 #if LJ_TARGET_WINDOWS
 typedef HANDLE NLThread;
@@ -235,7 +235,7 @@ static char *str_dup(const char *s)
   return p;
 }
 
-/* -- Ports ------------------------------------------------------------------ */
+/* -- Ports --------------------------------------------------------------- */
 
 #if LJ_TARGET_WINDOWS
 typedef volatile LONG NLRefs;
@@ -308,7 +308,7 @@ static NLPort *state_port(lua_State *L)
   return ns->port;
 }
 
-/* -- Settings a worker copies from the main state -------------------------- */
+/* -- Settings a worker copies from the main state ------------------------ */
 
 typedef struct NLSettings {
   lua_Integer opt[NL_OPT__MAX+1];
@@ -322,11 +322,8 @@ typedef struct NLSettings {
 
 static void settings_free(NLSettings *s)
 {
-  size_t i;
-  for (i = 0; i < s->npath; i++) free(s->path[i]);
-  free(s->path);
-  for (i = 0; i < s->ndecl; i++) free(s->decl[i]);
-  free(s->decl);
+  lj_nl_strlist_free(s->path, s->npath);
+  lj_nl_strlist_free(s->decl, s->ndecl);
   memset(s, 0, sizeof(*s));
 }
 
@@ -344,7 +341,7 @@ static char **strs_copy(char **src, size_t n)
   return dst;
 }
 
-/* -- Requests and envelopes ------------------------------------------------- */
+/* -- Requests and envelopes ---------------------------------------------- */
 
 /* A job or a call waiting for its result: in the pool's queue (a job not
 ** taken yet), or in the running list of the worker handling it.
@@ -405,7 +402,7 @@ static void req_free(NLReq *r)
   free(r);
 }
 
-/* -- Workers ---------------------------------------------------------------- */
+/* -- Workers ------------------------------------------------------------- */
 
 enum { W_POOL, W_DEDICATED };
 
@@ -699,7 +696,7 @@ static void worker_setfailure(NLWorker *w, const char *msg)
   w->failure = str_dup(msg ? msg : "the worker failed");
 }
 
-/* -- The Lua side of the loop ------------------------------------------------ */
+/* -- The Lua side of the loop -------------------------------------------- */
 
 static int open_f(lua_State *L)
 {
@@ -891,7 +888,7 @@ static int running_has(NLWorker *w, NLReq *r)
   return 0;
 }
 
-/* -- The job queue ----------------------------------------------------------- */
+/* -- The job queue ------------------------------------------------------- */
 
 static int worker_hasfile(NLWorker *w, const char *file)
 {
@@ -973,7 +970,7 @@ static NLReq *queue_take(NLWorkers *wk, NLWorker *w)
   return pick;
 }
 
-/* -- One step of a worker's loop ----------------------------------------------- */
+/* -- One step of a worker's loop ----------------------------------------- */
 
 static void worker_close(NLWorker *w, const char *why);
 
@@ -1301,8 +1298,6 @@ static int pool_start(lua_State *L, NLWorkers *wk)
   return i > 0;
 }
 
-static void worker_free(NLWorker *w);
-
 /* Joins the threads of the workers that have ended, and frees the dedicated
 ** workers that have ended and that no handle names any more (their
 ** records would otherwise pile up until lua_close). On the main thread.
@@ -1344,7 +1339,7 @@ static void workers_reap(NLWorkers *wk)
   }
 }
 
-/* -- Pumped workers (no threads) ------------------------------------------------ */
+/* -- Pumped workers (no threads) ----------------------------------------- */
 
 /* At most this many steps of one pumped worker per pump of the main state. */
 #define PUMP_STEPS	64
@@ -1405,7 +1400,7 @@ static double pumped_deadline(NLWorkers *wk)
   return d;
 }
 
-/* -- Closing ----------------------------------------------------------------------- */
+/* -- Closing ------------------------------------------------------------- */
 
 /* lua_close of the main state (lj_nl_freestate): stops every worker, waits
 ** for the threads, closes the pumped states, frees the queue.
@@ -1464,7 +1459,7 @@ void lj_nl_closeworkers(NLState *ns)
   ns->wk = NULL;
 }
 
-/* -- Envelopes arriving -------------------------------------------------------------- */
+/* -- Envelopes arriving -------------------------------------------------- */
 
 /* A call that its worker will never handle. */
 static void env_drop(NLEnv *e)
@@ -1573,7 +1568,7 @@ static void env_deliver(lua_State *L, void *data)
   }
 }
 
-/* -- Boxes: a message, a port, held by Lua ---------------------------------------- */
+/* -- Boxes: a message, a port, held by Lua ------------------------------- */
 
 #define MSGBOX_MT	"nl.worker.msg"
 #define PORTBOX_MT	"nl.worker.port"
@@ -1703,7 +1698,7 @@ static void push_portbox(lua_State *L, NLPort *p)
   b->p = p;
 }
 
-/* -- host.worker: the C side of runtime/nl_64_worker.lua --------------------------- */
+/* -- host.worker: the C side of runtime/nl_64_worker.lua ----------------- */
 
 /* worker.setup(ctx): the transfer context (lj_nltransfer.c). */
 static int hw_setup(lua_State *L)
@@ -1928,22 +1923,17 @@ static int hw_call(lua_State *L)
 static int hw_emit(lua_State *L)
 {
   int n = lua_gettop(L) - 2;
+  NLWorker *w = testworkerbox(L, 1) ? check_worker(L, 1) : NULL;
+  NLPort *p = w ? NULL : checkportbox(L, 1)->p;
   NLEnv *e;
   NLMsg *m;
   int ok;
-  int toworker = testworkerbox(L, 1) != NULL;
-  if (!toworker) checkportbox(L, 1);
   m = lj_nl_encode(L, 3, n, 2);
   e = (NLEnv *)calloc(1, sizeof(NLEnv));
   if (!e) { lj_nl_msgfree(m); return luaL_error(L, "not enough memory"); }
   e->kind = ENV_EMIT;
   e->msg = m;
-  if (toworker) {
-    ok = post_to_worker(check_worker(L, 1), e);
-  } else {
-    PortBox *b = testportbox(L, 1);
-    ok = port_post(b->p, env_deliver, e);
-  }
+  ok = w ? post_to_worker(w, e) : port_post(p, env_deliver, e);
   if (!ok) env_free(e);  /* Nothing comes back from an event. */
   return 0;
 }
@@ -2011,13 +2001,12 @@ static int hw_replyerror(lua_State *L)
 static int hw_decode(lua_State *L)
 {
   MsgBox *b = checkmsgbox(L, 1);
-  int n, base = lua_gettop(L);
+  int n;
   NLMsg *m = b->m;
   if (!m) return luaL_error(L, "worker.decode: the message was decoded already");
   n = lj_nl_decode(L, m);
   b->m = NULL;
   lj_nl_msgfree(m);
-  (void)base;
   return n;
 }
 
@@ -2110,7 +2099,7 @@ void lj_nl_pushhostworker(lua_State *L)
   }
 }
 
-/* -- Host API --------------------------------------------------------------------- */
+/* -- Host API ------------------------------------------------------------ */
 
 static int count_f(lua_State *L, void *ud)
 {

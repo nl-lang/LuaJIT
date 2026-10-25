@@ -363,7 +363,7 @@ GCproto *lj_bcread_proto(LexState *ls)
     (uint8_t)(((flags & BCDUMP_PF_METHOD) ? PROTO_METHOD : 0) |
 	      ((flags & BCDUMP_PF_NL) ? PROTO_NL : 0)) : 0;
 #else
-  (void)0;
+  pt->nlflags = 0;
 #endif
   pt->trace = 0;
   setgcref(pt->chunkname, obj2gco(ls->chunkname));

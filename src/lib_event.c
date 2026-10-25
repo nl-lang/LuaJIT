@@ -321,7 +321,7 @@ LUALIB_API int luaopen_event(lua_State *L)
   return 1;
 }
 
-/* -- C entry points ------------------------------------------------------- */
+/* -- C entry points ------------------------------------------------------ */
 
 LUA_API void nl_runevent(lua_State *L, const char *name, int nargs,
 			 int nresults)

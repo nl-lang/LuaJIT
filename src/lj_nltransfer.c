@@ -89,7 +89,7 @@
 #include "lj_str.h"
 #include "lj_state.h"
 
-/* -- Format --------------------------------------------------------------- */
+/* -- Format -------------------------------------------------------------- */
 
 enum {
   TT_NIL, TT_FALSE, TT_TRUE, TT_NUM, TT_INT, TT_STR, TT_TAB, TT_TABMT,
@@ -120,7 +120,7 @@ size_t lj_nl_msgsize(const NLMsg *m)
   return m ? m->size : 0;
 }
 
-/* -- Encoder --------------------------------------------------------------- */
+/* -- Encoder ------------------------------------------------------------- */
 
 /* A table being written, or a host userdata whose payload is being written. */
 typedef struct EFrame {
@@ -1056,7 +1056,7 @@ NLMsg *lj_nl_encode(lua_State *L, int base, int n, int labidx)
   return m;
 }
 
-/* -- Decoder --------------------------------------------------------------- */
+/* -- Decoder ------------------------------------------------------------- */
 
 typedef struct DVal {
   int tag;		/* DV_* */

@@ -49,7 +49,7 @@ LUA_API lua_Integer nl_getoption(lua_State *L, int opt);	/* [-0, +0, -] */
 LUA_API int nl_isworker(lua_State *L);				/* [-0, +0, -] */
 /* 1 when the workers' settings are fixed for L (L is a worker, or a main
 ** state with workers): nl_setloader then has no effect, nor nl_addpath and
-** nl_adddecl on a main state (2.10).
+** nl_adddecl on a main state (see the end of this file).
 */
 LUA_API int nl_workersstarted(lua_State *L);			/* [-0, +0, -] */
 LUA_API void nl_sandboxenv(lua_State *L);			/* [-0, +1, m] */
@@ -212,7 +212,7 @@ typedef void (*nl_Timer)(void *data, lua_State *L, double seconds,
 LUA_API void nl_settimer(lua_State *L, nl_Timer fn, void *data); /* [-0, +0, -] */
 LUA_API void nl_setunhandled(lua_State *L);			/* [-1, +0, -] */
 
-/* -- Threads and workers -------------------------------------------------- */
+/* -- Threads and workers ------------------------------------------------- */
 
 /* nl_pump runs the callbacks posted so far, each in a protected call (job
 ** results and events from workers arrive this way), then, with no worker

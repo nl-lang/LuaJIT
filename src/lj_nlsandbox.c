@@ -67,7 +67,7 @@ static int sandbox_denied(const char *name)
 	 strncmp(name, "jit.", 4) == 0 || strcmp(name, "string.buffer") == 0;
 }
 
-/* -- Text-only loading ---------------------------------------------------- */
+/* -- Text-only loading --------------------------------------------------- */
 
 /* Ends a load: the function with the environment at envidx, or nil and the
 ** message. A bytecode chunk was refused by the mode "t" check of lua_loadx;
@@ -200,7 +200,7 @@ static int sandbox_getmetatable(lua_State *L)
   return 1;
 }
 
-/* -- require -------------------------------------------------------------- */
+/* -- require ------------------------------------------------------------- */
 
 /* The mark of a module being loaded; only its address is used. */
 static const char sandbox_loading = 0;
@@ -323,7 +323,7 @@ static int sandbox_require(lua_State *L)
   return lua_error(L);
 }
 
-/* -- The environment ------------------------------------------------------ */
+/* -- The environment ----------------------------------------------------- */
 
 /* Whether env (an absolute index) has a value at k, raw. */
 static int env_has(lua_State *L, int env, const char *k)
@@ -498,7 +498,7 @@ LUA_API void nl_sandboxenv(lua_State *L)
   sandbox_fill(L, lua_gettop(L));
 }
 
-/* -- The host table (runtime/nl.lua, HOST TABLE) -------------------------- */
+/* -- The host table (runtime/nl.lua, HOST TABLE) ------------------------- */
 
 /* host.sandbox(f) -> f: in the sandbox, f gets the sandbox environment.
 ** rt.load calls it on each chunk from the compiler before running it, so

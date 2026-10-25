@@ -82,8 +82,8 @@ static void posted_signal(NLState *ns) { pthread_cond_broadcast(&ns->posted); }
 /* -- String lists -------------------------------------------------------- */
 
 /* Appends a copy of s[0..len] to a growable list; 0 on OOM. */
-static int strlist_push(char ***list, size_t *n, size_t *sz,
-			const char *s, size_t len)
+int lj_nl_strlist_push(char ***list, size_t *n, size_t *sz,
+		       const char *s, size_t len)
 {
   char *copy;
   if (*n == *sz) {
@@ -101,7 +101,7 @@ static int strlist_push(char ***list, size_t *n, size_t *sz,
   return 1;
 }
 
-static void strlist_free(char **list, size_t n)
+void lj_nl_strlist_free(char **list, size_t n)
 {
   size_t i;
   for (i = 0; i < n; i++) free(list[i]);
@@ -113,10 +113,10 @@ static void strlist_free(char **list, size_t n)
 static int path_push(NLState *ns, const char *dir, size_t len)
 {
   if (len == 0) return 1;
-  return strlist_push(&ns->path, &ns->npath, &ns->szpath, dir, len);
+  return lj_nl_strlist_push(&ns->path, &ns->npath, &ns->szpath, dir, len);
 }
 
-static int path_isabs(const char *p)
+int lj_nl_pathisabs(const char *p)
 {
 #if LJ_TARGET_WINDOWS
   return p[0] == '\\' || p[0] == '/' || (p[0] && p[1] == ':');
@@ -133,7 +133,7 @@ int lj_nl_addpath(NLState *ns, const char *dir)
 {
   char cwd[4096];
   size_t len = strlen(dir);
-  if (len == 0 || path_isabs(dir) || !nl_getcwd(cwd, sizeof(cwd)))
+  if (len == 0 || lj_nl_pathisabs(dir) || !nl_getcwd(cwd, sizeof(cwd)))
     return path_push(ns, dir, len);
   else {
     size_t clen = strlen(cwd);
@@ -160,7 +160,7 @@ int lj_nl_adddecl(NLState *ns, const char *name)
   if (len == 0) return 1;
   for (i = 0; i < ns->ndecl; i++)
     if (strcmp(ns->decl[i], name) == 0) return 1;
-  return strlist_push(&ns->decl, &ns->ndecl, &ns->szdecl, name, len);
+  return lj_nl_strlist_push(&ns->decl, &ns->ndecl, &ns->szdecl, name, len);
 }
 
 /* The search path starts as NL_PATH, separated like the system's PATH;
@@ -256,8 +256,8 @@ void lj_nl_freestate(global_State *g)
       p = next;
     }
   }
-  strlist_free(ns->path, ns->npath);
-  strlist_free(ns->decl, ns->ndecl);
+  lj_nl_strlist_free(ns->path, ns->npath);
+  lj_nl_strlist_free(ns->decl, ns->ndecl);
   sync_destroy(ns);
   free(ns);
   g->nl = NULL;

@@ -67,11 +67,13 @@ static const char *subject(lua_State *L, int idx, size_t *len)
   return strVdata(o);
 }
 
-/* A 1-based byte position as a 0-based offset; past the end stays past. */
+/* A 1-based byte position as a 0-based offset; past the end stays past,
+** NaN counts as before the start.
+*/
 static size_t startarg(lua_State *L, int idx, size_t len)
 {
   lua_Number n = luaL_optnumber(L, idx, 1);
-  if (n < 1) return 0;
+  if (!(n >= 1)) return 0;
   if (n > (lua_Number)len + 1) return len + 1;
   return (size_t)n - 1;
 }
