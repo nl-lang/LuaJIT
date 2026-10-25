@@ -634,16 +634,16 @@ static void worker_wakeup(void *data)
   mtx_unlock(&wk->mtx);
 }
 
-/* A new state for w, with the settings copied from the main state. NULL when
-** out of memory.
-*/
-/* For tests only (tests/vm/real/test_workers.c, finding 15 of the review):
-** when 0 or more, how many more worker states may be made; the next one
-** fails as if out of memory. -1, the default, is no limit. Read and written
-** under the workers' lock.
+/* For tests only (tests/vm/real/test_workers.c: a pool whose workers cannot
+** start fails the jobs given to it): when 0 or more, how many more
+** worker states may be made; the next one fails as if out of memory. -1,
+** the default, is no limit. Read and written under the workers' lock.
 */
 int lj_nl_test_workerstates = -1;
 
+/* A new state for w, with the settings copied from the main state. NULL when
+** out of memory.
+*/
 static lua_State *worker_newstate(NLWorker *w)
 {
   NLWorkers *wk = w->wk;
@@ -1579,25 +1579,69 @@ static void env_deliver(lua_State *L, void *data)
 #define PORTBOX_MT	"nl.worker.port"
 #define WORKERBOX_MT	"nl.worker.handle"
 
-typedef struct MsgBox { NLMsg *m; } MsgBox;
-typedef struct PortBox { NLPort *p; } PortBox;
+/* The metatables are under names in the registry, which a script can read
+** (debug.getregistry) and put on a userdata of its own (debug.setmetatable)
+** or on another kind of box. So a box is known by its metatable, its size
+** and its magic number, all three, and every function that takes one, its
+** __gc included, checks them (testbox): a userdata that is not the box is
+** an argument error, and a __gc ignores it.
+*/
+#define MSGBOX_MAGIC	0x4e4c4d53u	/* "NLMS" */
+#define PORTBOX_MAGIC	0x4e4c5054u	/* "NLPT" */
+#define WORKERBOX_MAGIC	0x4e4c574bu	/* "NLWK" */
 
-static int msgbox_gc(lua_State *L)
-{
-  MsgBox *b = (MsgBox *)luaL_checkudata(L, 1, MSGBOX_MT);
-  if (b->m) { lj_nl_msgfree(b->m); b->m = NULL; }
-  return 0;
-}
-
+typedef struct MsgBox { uint32_t magic; NLMsg *m; } MsgBox;
+typedef struct PortBox { uint32_t magic; NLPort *p; } PortBox;
 /* The handle of a dedicated worker holds the record alive (hrefs): a
 ** handle to a worker that has ended reads its `closed`, never freed memory.
 */
-typedef struct WorkerBox { NLWorker *w; } WorkerBox;
+typedef struct WorkerBox { uint32_t magic; NLWorker *w; } WorkerBox;
+
+/* The box at idx with metatable mt, of `size` bytes, starting with magic;
+** or NULL.
+*/
+static void *testbox(lua_State *L, int idx, const char *mt, size_t size,
+		     uint32_t magic)
+{
+  void *b = luaL_testudata(L, idx, mt);
+  if (b && lua_objlen(L, idx) == size && *(uint32_t *)b == magic) return b;
+  return NULL;
+}
+
+static void *checkbox(lua_State *L, int idx, const char *mt, size_t size,
+		      uint32_t magic)
+{
+  void *b = testbox(L, idx, mt, size, magic);
+  if (!b) luaL_typerror(L, idx, mt);
+  return b;
+}
+
+#define testmsgbox(L, i) \
+  ((MsgBox *)testbox((L), (i), MSGBOX_MT, sizeof(MsgBox), MSGBOX_MAGIC))
+#define checkmsgbox(L, i) \
+  ((MsgBox *)checkbox((L), (i), MSGBOX_MT, sizeof(MsgBox), MSGBOX_MAGIC))
+#define testportbox(L, i) \
+  ((PortBox *)testbox((L), (i), PORTBOX_MT, sizeof(PortBox), PORTBOX_MAGIC))
+#define checkportbox(L, i) \
+  ((PortBox *)checkbox((L), (i), PORTBOX_MT, sizeof(PortBox), PORTBOX_MAGIC))
+#define testworkerbox(L, i) \
+  ((WorkerBox *)testbox((L), (i), WORKERBOX_MT, sizeof(WorkerBox), \
+			WORKERBOX_MAGIC))
+#define checkworkerbox(L, i) \
+  ((WorkerBox *)checkbox((L), (i), WORKERBOX_MT, sizeof(WorkerBox), \
+			 WORKERBOX_MAGIC))
+
+static int msgbox_gc(lua_State *L)
+{
+  MsgBox *b = testmsgbox(L, 1);
+  if (b && b->m) { lj_nl_msgfree(b->m); b->m = NULL; }
+  return 0;
+}
 
 static int workerbox_gc(lua_State *L)
 {
-  WorkerBox *b = (WorkerBox *)luaL_checkudata(L, 1, WORKERBOX_MT);
-  if (b->w) {
+  WorkerBox *b = testworkerbox(L, 1);
+  if (b && b->w) {
     NLWorkers *wk = b->w->wk;
     mtx_lock(&wk->mtx);
     b->w->hrefs--;
@@ -1613,6 +1657,7 @@ static int workerbox_gc(lua_State *L)
 static void push_workerbox(lua_State *L)
 {
   WorkerBox *b = (WorkerBox *)lua_newuserdata(L, sizeof(WorkerBox));
+  b->magic = WORKERBOX_MAGIC;
   b->w = NULL;
   if (luaL_newmetatable(L, WORKERBOX_MT)) {
     lua_pushcfunction(L, workerbox_gc);
@@ -1623,8 +1668,8 @@ static void push_workerbox(lua_State *L)
 
 static int portbox_gc(lua_State *L)
 {
-  PortBox *b = (PortBox *)luaL_checkudata(L, 1, PORTBOX_MT);
-  if (b->p) { lj_nl_portunref(b->p); b->p = NULL; }
+  PortBox *b = testportbox(L, 1);
+  if (b && b->p) { lj_nl_portunref(b->p); b->p = NULL; }
   return 0;
 }
 
@@ -1634,6 +1679,7 @@ static int portbox_gc(lua_State *L)
 static void push_msgbox(lua_State *L, NLMsg *m)
 {
   MsgBox *b = (MsgBox *)lua_newuserdata(L, sizeof(MsgBox));
+  b->magic = MSGBOX_MAGIC;
   b->m = NULL;
   if (luaL_newmetatable(L, MSGBOX_MT)) {
     lua_pushcfunction(L, msgbox_gc);
@@ -1646,6 +1692,7 @@ static void push_msgbox(lua_State *L, NLMsg *m)
 static void push_portbox(lua_State *L, NLPort *p)
 {
   PortBox *b = (PortBox *)lua_newuserdata(L, sizeof(PortBox));
+  b->magic = PORTBOX_MAGIC;
   b->p = NULL;
   if (luaL_newmetatable(L, PORTBOX_MT)) {
     lua_pushcfunction(L, portbox_gc);
@@ -1822,7 +1869,7 @@ static int hw_new(lua_State *L)
 
 static NLWorker *check_worker(lua_State *L, int idx)
 {
-  WorkerBox *b = (WorkerBox *)luaL_checkudata(L, idx, WORKERBOX_MT);
+  WorkerBox *b = checkworkerbox(L, idx);
   if (!b->w) luaL_argerror(L, idx, "a worker");
   return b->w;
 }
@@ -1884,8 +1931,8 @@ static int hw_emit(lua_State *L)
   NLEnv *e;
   NLMsg *m;
   int ok;
-  int toworker = luaL_testudata(L, 1, WORKERBOX_MT) != NULL;
-  if (!toworker) luaL_checkudata(L, 1, PORTBOX_MT);
+  int toworker = testworkerbox(L, 1) != NULL;
+  if (!toworker) checkportbox(L, 1);
   m = lj_nl_encode(L, 3, n, 2);
   e = (NLEnv *)calloc(1, sizeof(NLEnv));
   if (!e) { lj_nl_msgfree(m); return luaL_error(L, "not enough memory"); }
@@ -1894,7 +1941,7 @@ static int hw_emit(lua_State *L)
   if (toworker) {
     ok = post_to_worker(check_worker(L, 1), e);
   } else {
-    PortBox *b = (PortBox *)lua_touserdata(L, 1);
+    PortBox *b = testportbox(L, 1);
     ok = port_post(b->p, env_deliver, e);
   }
   if (!ok) env_free(e);  /* Nothing comes back from an event. */
@@ -1963,7 +2010,7 @@ static int hw_replyerror(lua_State *L)
 /* worker.decode(box) -> values: the values of a message, which is freed. */
 static int hw_decode(lua_State *L)
 {
-  MsgBox *b = (MsgBox *)luaL_checkudata(L, 1, MSGBOX_MT);
+  MsgBox *b = checkmsgbox(L, 1);
   int n, base = lua_gettop(L);
   NLMsg *m = b->m;
   if (!m) return luaL_error(L, "worker.decode: the message was decoded already");
@@ -1977,7 +2024,7 @@ static int hw_decode(lua_State *L)
 /* worker.msgsize(box) -> bytes. */
 static int hw_msgsize(lua_State *L)
 {
-  MsgBox *b = (MsgBox *)luaL_checkudata(L, 1, MSGBOX_MT);
+  MsgBox *b = checkmsgbox(L, 1);
   lua_pushnumber(L, (lua_Number)lj_nl_msgsize(b->m));
   return 1;
 }
@@ -2006,7 +2053,7 @@ static int hw_parent(lua_State *L)
 /* worker.isself(port box) -> boolean: the port is this state's own. */
 static int hw_isself(lua_State *L)
 {
-  PortBox *b = (PortBox *)luaL_checkudata(L, 1, PORTBOX_MT);
+  PortBox *b = checkportbox(L, 1);
   lua_pushboolean(L, b->p != NULL && b->p == nl_state(L)->port);
   return 1;
 }
