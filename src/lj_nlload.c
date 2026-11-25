@@ -17,22 +17,24 @@
 #define lj_nlload_c
 #define LUA_CORE
 
+#include "lj_nlint.h"
+#include "nltext.h"
+#include "nlregex.h"
+
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
 #include <errno.h>
 #include <sys/stat.h>
+/* After lj_nlint.h, which defines LJ_TARGET_WINDOWS (lj_arch.h). */
 #if LJ_TARGET_WINDOWS
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <direct.h>
 #else
 #include <unistd.h>
 #include <dirent.h>
 #endif
-
-#include "lj_nlint.h"
-#include "nltext.h"
-#include "nlregex.h"
 
 #if LJ_NL
 
@@ -129,7 +131,25 @@ static int join(char *out, size_t size, const char *dir, size_t dlen,
 static int canonical(const char *name, char *out, size_t size)
 {
 #if LJ_TARGET_WINDOWS
-  return _fullpath(out, name, size) != NULL;
+  /* As nlc's PathHost::canonical, with / for backslashes either way. */
+  char buf[NL_MAXPATH], cwd[NL_MAXPATH], rcwd[NL_MAXPATH], *p;
+  const char *shown = buf;
+  size_t len;
+  if (!_fullpath(buf, name, sizeof(buf))) return 0;
+  if (_getcwd(cwd, (int)sizeof(cwd)) && _fullpath(rcwd, cwd, sizeof(rcwd))) {
+    size_t clen = strlen(rcwd);
+    while (clen > 0 && (rcwd[clen-1] == '\\' || rcwd[clen-1] == '/'))
+      clen--;  /* A drive's root keeps its separator in _fullpath. */
+    if (clen > 0 && _strnicmp(buf, rcwd, clen) == 0 &&
+	(buf[clen] == '\\' || buf[clen] == '/') && buf[clen+1])
+      shown = buf + clen + 1;
+  }
+  len = strlen(shown);
+  if (len + 1 > size) return 0;
+  memmove(out, shown, len + 1);
+  for (p = out; *p; p++)
+    if (*p == '\\') *p = '/';
+  return 1;
 #else
   char buf[PATH_MAX], cwd[PATH_MAX], rcwd[PATH_MAX];
   const char *shown = buf;
