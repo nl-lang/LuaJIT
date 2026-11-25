@@ -46,6 +46,11 @@ typedef struct nlc_Loader {
 } nlc_Loader;
 
 typedef struct nlc_Options {
+  /* The declaration files in scope: ndecls names, each read through the
+  ** loader's `read` when the compile starts.
+  ** A name that cannot be read is an error of the compile. */
+  const char *const *decls;
+  size_t ndecls;
   int checks;		/* NL_OPT_CHECKS */
   int strip;		/* NL_OPT_STRIP */
   int bytecode;		/* 1: a bytecode dump; 0: Lua source (see above). */
@@ -54,11 +59,6 @@ typedef struct nlc_Options {
   ** events and is marked BCDUMP_F_NL. The VM asks for 1. Ignored for Lua
   ** source. */
   int level;
-  /* The declaration files in scope: ndecls names, each read through the
-  ** loader's `read` when the compile starts.
-  ** A name that cannot be read is an error of the compile. */
-  const char *const *decls;
-  size_t ndecls;
   /* NL_OPT_LOCALIZE: which Lua paths are read once, when the chunk loads,
   ** into hidden locals: 0 none, 1 the standard libraries, 2
   ** every Lua global. */
@@ -71,10 +71,10 @@ typedef struct nlc_Options {
 
 /* Same layout as nl_Diagnostic in nl.h. */
 typedef struct nlc_Diagnostic {
-  int severity;
   const char *code;
   const char *message;
   const char *file;
+  int severity;
   int line, column;
   int endline, endcolumn;
 } nlc_Diagnostic;

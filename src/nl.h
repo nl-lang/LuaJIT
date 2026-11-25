@@ -100,10 +100,10 @@ LUA_API void nl_setloader(lua_State *L, const nl_Loader *loader); /* [-0, +0, -]
 #define NL_DIAG_LINT		2
 
 typedef struct nl_Diagnostic {
-  int severity;			/* NL_DIAG_ERROR, NL_DIAG_WARNING, NL_DIAG_LINT */
   const char *code;		/* Stable identifier, such as "undeclared-name". */
   const char *message;
   const char *file;		/* Resolved name of the file. */
+  int severity;			/* NL_DIAG_ERROR, NL_DIAG_WARNING, NL_DIAG_LINT */
   int line, column;		/* 1-based. */
   int endline, endcolumn;
 } nl_Diagnostic;

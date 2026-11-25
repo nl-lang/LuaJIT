@@ -252,8 +252,8 @@ typedef int NLRefs;
 */
 struct NLPort {
   NLMutex mtx;
-  NLRefs refs;
   lua_State *L;		/* Guarded by mtx; NULL once the state closes. */
+  NLRefs refs;
 };
 
 static NLPort *port_new(lua_State *L)
@@ -312,12 +312,12 @@ static NLPort *state_port(lua_State *L)
 
 typedef struct NLSettings {
   lua_Integer opt[NL_OPT__MAX+1];
-  int hasloader;
   nl_Loader loader;
   char **path;
   size_t npath, declnpath;
   char **decl;
   size_t ndecl;
+  int hasloader;
 } NLSettings;
 
 static void settings_free(NLSettings *s)
@@ -360,11 +360,11 @@ enum { ENV_RESULT, ENV_CALL, ENV_EMIT, ENV_STOP };
 enum { RES_DONE, RES_FAILED, RES_WORKERERROR };
 
 typedef struct NLEnv {
-  int kind, status;
   double id;
   NLMsg *msg;
   char *text;		/* RES_WORKERERROR: the message. */
   NLPort *reply;	/* ENV_CALL: where the result goes (a reference). */
+  int kind, status;
 } NLEnv;
 
 static void env_free(NLEnv *e)
@@ -407,21 +407,32 @@ static void req_free(NLReq *r)
 enum { W_POOL, W_DEDICATED };
 
 struct NLWorker {
+  NLCond cond;			/* Signalled with wk->mtx held. */
   NLWorkers *wk;
   NLWorker *next;		/* In wk->workers. */
-  int kind;			/* W_POOL, W_DEDICATED. */
-  int threaded;
   NLThread thread;
-  int joined, exited;		/* Guarded by wk->mtx. */
-  int hrefs;			/* Handles (WorkerBox) that name it; guarded by
-				** wk->mtx. A dedicated worker that has ended
-				** is freed once none is left (workers_reap). */
   lua_State *L;			/* Its state: NULL once closed. */
   NLPort *port;			/* The state's port (ns->port of L). */
   NLPort *parentport;		/* Dedicated: the state that started it. */
   NLWorker *parent;		/* Dedicated: the worker that started it. */
   char *from, *path;		/* Dedicated: its file, as Worker.new gave it. */
-  NLCond cond;			/* Signalled with wk->mtx held. */
+  char *failure;		/* Why: the message of WorkerError. */
+  char **files;			/* Files its state has loaded (pool). */
+  size_t nfiles, szfiles;	/* Guarded by wk->mtx: read by enqueue. */
+  NLReq *running;		/* Requests it has taken and not answered. */
+  double deadline;		/* Its nearest timer, or -1. */
+  /* The memory limit (NL_OPT_WORKERMEM; overlimit): the allocator
+  ** counts.
+  */
+  lua_Alloc of;
+  void *oud;
+  size_t mem, limit;
+  int kind;			/* W_POOL, W_DEDICATED. */
+  int threaded;
+  int joined, exited;		/* Guarded by wk->mtx. */
+  int hrefs;			/* Handles (WorkerBox) that name it; guarded by
+				** wk->mtx. A dedicated worker that has ended
+				** is freed once none is left (workers_reap). */
   /* Guarded by wk->mtx. */
   int wake;			/* The inbox stopped being empty. */
   int stop;			/* Asked to end (Worker.stop, lua_close). */
@@ -432,32 +443,23 @@ struct NLWorker {
   int broken;			/* No Lua can run in it (the libraries failed). */
   int discard;			/* To be discarded (memory, a failure). */
   int served;			/* Pool: took a request since its state opened. */
-  char *failure;		/* Why: the message of WorkerError. */
-  char **files;			/* Files its state has loaded (pool). */
-  size_t nfiles, szfiles;	/* Guarded by wk->mtx: read by enqueue. */
-  NLReq *running;		/* Requests it has taken and not answered. */
-  double deadline;		/* Its nearest timer, or -1. */
-  /* The memory limit (NL_OPT_WORKERMEM): the allocator counts. */
-  lua_Alloc of;
-  void *oud;
-  size_t mem, limit;
-  int overlimit;
+  int overlimit;		/* Over the memory limit. */
 };
 
 struct NLWorkers {
+  NLSettings set;		/* What a new worker copies (guarded). */
   NLMutex mtx;
   lua_State *mainL;
-  int npool;			/* Pool size, -1 for the default. */
-  int started;			/* The pool has started. */
-  int threads;			/* Workers have threads (fixed at the start). */
-  int threadmode_set;		/* threads is decided. */
   NLWorker *workers;		/* Every worker, pool and dedicated. */
-  int npoolalive, ndedicated;
   NLReq *qhead, *qtail;		/* The job queue. */
   size_t qlen;
   lua_CFunction init;		/* nl_setworkerinit. */
   void *initdata;
-  NLSettings set;		/* What a new worker copies (guarded). */
+  int npool;			/* Pool size, -1 for the default. */
+  int started;			/* The pool has started. */
+  int threads;			/* Workers have threads (fixed at the start). */
+  int threadmode_set;		/* threads is decided. */
+  int npoolalive, ndedicated;
   int frozen;			/* The settings are fixed: the pool has started
 				** or a dedicated worker exists. */
   int sandbox;			/* NL_OPT_SANDBOX is on: every worker applies it
@@ -1585,46 +1587,47 @@ static void env_deliver(lua_State *L, void *data)
 #define PORTBOX_MAGIC	0x4e4c5054u	/* "NLPT" */
 #define WORKERBOX_MAGIC	0x4e4c574bu	/* "NLWK" */
 
-typedef struct MsgBox { uint32_t magic; NLMsg *m; } MsgBox;
-typedef struct PortBox { uint32_t magic; NLPort *p; } PortBox;
+typedef struct MsgBox { NLMsg *m; uint32_t magic; } MsgBox;
+typedef struct PortBox { NLPort *p; uint32_t magic; } PortBox;
 /* The handle of a dedicated worker holds the record alive (hrefs): a
 ** handle to a worker that has ended reads its `closed`, never freed memory.
 */
-typedef struct WorkerBox { uint32_t magic; NLWorker *w; } WorkerBox;
+typedef struct WorkerBox { NLWorker *w; uint32_t magic; } WorkerBox;
 
-/* The box at idx with metatable mt, of `size` bytes, starting with magic;
-** or NULL.
+/* The box at idx with metatable mt, of `size` bytes, with magic at offset
+** ofs; or NULL.
 */
 static void *testbox(lua_State *L, int idx, const char *mt, size_t size,
-		     uint32_t magic)
+		     size_t ofs, uint32_t magic)
 {
   void *b = luaL_testudata(L, idx, mt);
-  if (b && lua_objlen(L, idx) == size && *(uint32_t *)b == magic) return b;
+  if (b && lua_objlen(L, idx) == size &&
+      *(uint32_t *)((char *)b + ofs) == magic) return b;
   return NULL;
 }
 
 static void *checkbox(lua_State *L, int idx, const char *mt, size_t size,
-		      uint32_t magic)
+		      size_t ofs, uint32_t magic)
 {
-  void *b = testbox(L, idx, mt, size, magic);
+  void *b = testbox(L, idx, mt, size, ofs, magic);
   if (!b) luaL_typerror(L, idx, mt);
   return b;
 }
 
+#define BOX(f, T, L, i, mt, mg) \
+  ((T *)f((L), (i), (mt), sizeof(T), offsetof(T, magic), (mg)))
 #define testmsgbox(L, i) \
-  ((MsgBox *)testbox((L), (i), MSGBOX_MT, sizeof(MsgBox), MSGBOX_MAGIC))
+  BOX(testbox, MsgBox, L, i, MSGBOX_MT, MSGBOX_MAGIC)
 #define checkmsgbox(L, i) \
-  ((MsgBox *)checkbox((L), (i), MSGBOX_MT, sizeof(MsgBox), MSGBOX_MAGIC))
+  BOX(checkbox, MsgBox, L, i, MSGBOX_MT, MSGBOX_MAGIC)
 #define testportbox(L, i) \
-  ((PortBox *)testbox((L), (i), PORTBOX_MT, sizeof(PortBox), PORTBOX_MAGIC))
+  BOX(testbox, PortBox, L, i, PORTBOX_MT, PORTBOX_MAGIC)
 #define checkportbox(L, i) \
-  ((PortBox *)checkbox((L), (i), PORTBOX_MT, sizeof(PortBox), PORTBOX_MAGIC))
+  BOX(checkbox, PortBox, L, i, PORTBOX_MT, PORTBOX_MAGIC)
 #define testworkerbox(L, i) \
-  ((WorkerBox *)testbox((L), (i), WORKERBOX_MT, sizeof(WorkerBox), \
-			WORKERBOX_MAGIC))
+  BOX(testbox, WorkerBox, L, i, WORKERBOX_MT, WORKERBOX_MAGIC)
 #define checkworkerbox(L, i) \
-  ((WorkerBox *)checkbox((L), (i), WORKERBOX_MT, sizeof(WorkerBox), \
-			 WORKERBOX_MAGIC))
+  BOX(checkbox, WorkerBox, L, i, WORKERBOX_MT, WORKERBOX_MAGIC)
 
 static int msgbox_gc(lua_State *L)
 {

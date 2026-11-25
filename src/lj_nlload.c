@@ -313,12 +313,12 @@ static void current_loader(NLState *ns, nlc_Loader *ld)
 #define GUARD_MAGIC	0x4e4c4755u	/* "NLGU" */
 
 typedef struct Guard {
-  unsigned magic;	/* A script can give the guard metatable to another
-			** userdata (debug.setmetatable): __gc checks this. */
+  nlc_Loader loader;
   void (*cleanup)(struct Guard *g);
   nlc_Result *result;
-  nlc_Loader loader;
   const char *buf;
+  unsigned magic;	/* A script can give the guard metatable to another
+			** userdata (debug.setmetatable): __gc checks this. */
   char name[1];		/* A copy of the name, for release. */
 } Guard;
 

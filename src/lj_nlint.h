@@ -56,29 +56,23 @@ typedef struct NLProt {
 ** threads.
 */
 typedef struct NLState {
-  /* -- Shared with other threads, guarded by mtx. -- */
+  /* The fields marked "mtx:" are shared with other threads and guarded by
+  ** mtx; the others belong to the owner thread.
+  */
+  lua_Integer opt[NL_OPT__MAX+1];
+  NLCond idle;			/* mtx: signalled when wakeup_calls drops to 0. */
+  NLCond posted;		/* mtx: signalled by nl_post while nl_drain
+				** waits. */
   NLMutex mtx;
-  NLCond idle;			/* Signalled when wakeup_calls drops to 0. */
-  NLPost *head, *tail;		/* The inbox. */
-  nl_Wakeup wakeup;
-  void *wakeupdata;
-  int wakeup_calls;		/* Wakeup calls in progress. */
-  NLCond posted;		/* Signalled by nl_post while nl_drain waits. */
-  int drain_waiting;		/* nl_drain waits for the inbox. */
-  /* -- Owner thread only. -- */
-  int rtref;			/* Registry reference of rt, or LUA_NOREF. */
-  int trampref;			/* Registry reference of the trampoline. */
-  int guardref;			/* Registry reference of the guard metatable. */
-  int sandboxref;		/* Registry reference of the sandbox environment. */
-  int sandboxpkgref;		/* Registry reference of the sandbox's package. */
+  nl_Loader loader;		/* Host loader, when hasloader. */
+  NLPost *head, *tail;		/* mtx: the inbox. */
+  nl_Wakeup wakeup;		/* mtx: */
+  void *wakeupdata;		/* mtx: */
   NLProt *prot;			/* The call the trampoline is to make. */
   const char *evname;		/* The event nl_prunevent is to run. */
-  int hasloader;
-  nl_Loader loader;		/* Host loader, when hasloader. */
   nl_Reporter reporter;
   void *reporterdata;
   lua_CFunction hostinit;	/* nl_sethostinit. */
-  lua_Integer opt[NL_OPT__MAX+1];
   char **path;			/* Import search path. */
   size_t npath, szpath;
   size_t declnpath;		/* Entries of path that feed declaration files
@@ -90,8 +84,16 @@ typedef struct NLState {
 				** of its workers. NULL until the first is made. */
   NLWorker *worker;		/* In a worker state: the worker. */
   NLPort *port;			/* Where results for this state go, once made. */
-  int wctxref;			/* Registry reference of the transfer context. */
   lua_Integer outstanding;	/* Jobs and calls sent, results not delivered. */
+  int wakeup_calls;		/* mtx: wakeup calls in progress. */
+  int drain_waiting;		/* mtx: nl_drain waits for the inbox. */
+  int rtref;			/* Registry reference of rt, or LUA_NOREF. */
+  int trampref;			/* Registry reference of the trampoline. */
+  int guardref;			/* Registry reference of the guard metatable. */
+  int sandboxref;		/* Registry reference of the sandbox environment. */
+  int sandboxpkgref;		/* Registry reference of the sandbox's package. */
+  int hasloader;
+  int wctxref;			/* Registry reference of the transfer context. */
   int wpumping;			/* nl_pump is stepping the pumped workers. */
 } NLState;
 

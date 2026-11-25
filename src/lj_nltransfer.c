@@ -137,9 +137,9 @@ typedef struct EFrame {
 } EFrame;
 
 typedef struct ERef {
-  uint8_t kind;
-  uint32_t file;
   GCstr *name;
+  uint32_t file;
+  uint8_t kind;
 } ERef;
 
 /* The class of a metatable for tables or for userdata, kept for the rest of
@@ -163,29 +163,31 @@ typedef struct Enc {
   size_t n, cap;
   size_t charged;	/* Bytes counted toward the worker's memory limit. */
   NLMsg *result;
-  /* The header. */
+  /* The header: files (nfiles, szfiles) and refs (nrefs, szrefs). */
   GCstr **files;
-  uint32_t nfiles, szfiles;
   ERef *refs;
-  uint32_t nrefs, szrefs;
-  /* Objects written: pointer -> id (open addressing). */
+  /* Objects written: pointer -> id (open addressing; smask, scount). */
   uintptr_t *skeys;
   uint32_t *svals;
-  uint32_t smask, scount;
-  uint32_t nobj;
   size_t *objat;	/* Where each object's tag is in buf (index id-1). */
   TValue *objtv;	/* Each object, for anchoring (index id-1). */
-  uint32_t szobj;
-  uint32_t nanchoredobj;	/* Objects anchored so far (a watermark). */
-  /* Host objects whose payload is still being written. */
+  /* Host objects whose payload is still being written (nhostopen,
+  ** szhostopen).
+  */
   uint32_t *hostopen;
-  uint32_t nhostopen, szhostopen;
-  EFrame *fr;
-  uint32_t nfr, szfr;
-  EClass *cls;
-  uint32_t clsmask, ncls;
+  EFrame *fr;		/* nfr, szfr. */
+  EClass *cls;		/* clsmask, ncls. */
   /* ctx.named and ctx.other_info, read once (both stay alive in ctx). */
   GCtab *named, *other_info;
+  uint32_t nfiles, szfiles;
+  uint32_t nrefs, szrefs;
+  uint32_t smask, scount;
+  uint32_t nobj;
+  uint32_t szobj;
+  uint32_t nanchoredobj;	/* Objects anchored so far (a watermark). */
+  uint32_t nhostopen, szhostopen;
+  uint32_t nfr, szfr;
+  uint32_t clsmask, ncls;
   /* Stack indices. */
   int ctx, anchor, part;
   uint32_t nanchor;
@@ -1059,17 +1061,18 @@ NLMsg *lj_nl_encode(lua_State *L, int base, int n, int labidx)
 /* -- Decoder ------------------------------------------------------------- */
 
 typedef struct DVal {
-  int tag;		/* DV_* */
-  int32_t i;
   double n;
   const char *s;
   size_t len;
+  int tag;		/* DV_* */
+  int32_t i;
   uint32_t id;		/* DV_OBJ: object; DV_REF: ref. */
 } DVal;
 
 enum { DV_NIL, DV_FALSE, DV_TRUE, DV_NUM, DV_INT, DV_STR, DV_OBJ, DV_REF };
 
 typedef struct DFrame {
+  DVal key;
   uint32_t obj;		/* The table or host object. */
   int slot;		/* The table's stack slot, or 0: it is in objs only. */
   int keep;		/* It is in objs too (a BACK names it). */
@@ -1078,7 +1081,6 @@ typedef struct DFrame {
   uint32_t arrleft;	/* Array run values left. */
   uint32_t arrnext;	/* The key of the next one. */
   int haskey;		/* A key read, waiting for its value. */
-  DVal key;
 } DFrame;
 
 /* Open tables stay on the Lua stack this deep; deeper ones are found in
